@@ -14,7 +14,7 @@ from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import (  
     Message, CallbackQuery,  
     InlineKeyboardMarkup, InlineKeyboardButton,  
-    ReplyKeyboardMarkup, KeyboardButton, WebAppInfo  
+    ReplyKeyboardMarkup, KeyboardButton  
 )  
   
 BOT_TOKEN = "9111963048:AAHem8wQwJiU5mkeoob_3KtmPRP8sGtYtmM"  
@@ -127,7 +127,7 @@ async def cmd_start(msg: Message):
             return  
 
     await msg.answer(  
-        f"🏦 Добро пожаловать в <b>{BRAND}</b>!\n\nНажми кнопку ниже, чтобы создать сделку.",  
+        f"🏦 Добро пожаловать в <b>{BRAND}</b>!\n\nНажми кнопку ниже для создания сделки.",  
         parse_mode="HTML",
         reply_markup=main_menu()  
     )  
@@ -148,7 +148,7 @@ async def process_gift_amount(msg: Message, state: FSMContext):
     try:
         amount = float(msg.text.strip().replace(",", "."))
     except ValueError:
-        await msg.answer("❌ Неверный формат суммы. Введите число (например, 1488):")
+        await msg.answer("❌ Неверный формат суммы. Введите число:")
         return
 
     data = await state.get_data()
@@ -175,16 +175,47 @@ async def process_gift_amount(msg: Message, state: FSMContext):
         f"⏳ <b>Время до сгорания ордера:</b> 2 часа 0 минут"
     )
     
-    # Кнопка отправки ордера в чат (использует switch_inline или прямую ссылку-приглашение без плашек via)
-    share_kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="📤 Отправить ордер другу", switch_inline_query=code)]
+    # Кнопка отправки готовой карточки прямо в этот чат (без всяких инлайн-строк ввода)
+    send_kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📤 Опубликовать карточку ордера", callback_data=f"publish_{code}")]
     ])
 
     await msg.answer(
-        f"✅ <b>Ордер #{code} успешно создан!</b>\nНажми кнопку ниже, чтобы отправить его в нужный чат:",
+        f"✅ <b>Ордер #{code} сгенерирован!</b>\nНажми кнопку ниже, чтобы отправить его в чат:",
         parse_mode="HTML",
-        reply_markup=share_kb
+        reply_markup=send_kb
     )
+
+@router.callback_query(F.data.startswith("publish_"))
+async def publish_deal(cb: CallbackQuery):
+    code = cb.data.split("_")[1]
+    deal = get_deal(code)
+    if deal:
+        gift_link = deal[5]
+        amount = deal[6]
+        creator_uname = deal[3]
+        
+        caption = (
+            f"Пользователь {creator_uname} предлагает вам <b>{amount:,.0f} ⭐</b> за подарок\n\n"
+            f"Telegram\n<a href=\"{gift_link}\">Подарок</a>\n\n"
+            f"⏳ <b>Время до сгорания ордера:</b> 2 часа 0 минут"
+        )
+        
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="🎁 ПОКАЗАТЬ ПОДАРОК", url=gift_link)],
+            [InlineKeyboardButton(text="✅ Принять сделку", callback_data=f"sel_accept_{code}")],
+            [InlineKeyboardButton(text="❌ Отклонить", callback_data=f"sel_reject_{code}")]
+        ])
+        
+        # Отправляем чистую карточку от бота в чат без лишних плашек
+        await cb.message.answer_photo(
+            photo="https://images.unsplash.com/photo-1513151233558-d860c5398176?q=80&w=1000&auto=format&fit=crop",
+            caption=caption,
+            parse_mode="HTML",
+            reply_markup=kb
+        )
+        await cb.message.delete()
+        await cb.answer("Ордер опубликован!")
 
 @router.message(F.text.contains("Помощь"))
 async def help_msg(msg: Message):  
@@ -259,7 +290,7 @@ async def main():
     bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))  
     dp = Dispatcher(storage=MemoryStorage())  
     dp.include_router(router)  
-    print(f"[{BRAND}] Бот запущен без левых плашек.")  
+    print(f"[{BRAND}] Запущен без инлайн-строк.")  
     await dp.start_polling(bot)  
 
 if __name__ == "__main__":  
