@@ -171,11 +171,11 @@ async def process_gift_amount(msg: Message, state: FSMContext):
     conn.close()
 
     send_kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="📤 Отправить карточку в чат", callback_data=f"publish_{code}")]
+        [InlineKeyboardButton(text="📤 Опубликовать карточку ордера", callback_data=f"publish_{code}")]
     ])
 
     await msg.answer(
-        f"✅ <b>Ордер #{code} готов!</b>\nНажми кнопку ниже, чтобы опубликовать его:",
+        f"✅ <b>Ордер #{code} готов!</b>\nНажми кнопку ниже, чтобы опубликовать его в чате:",
         parse_mode="HTML",
         reply_markup=send_kb
     )
@@ -281,7 +281,7 @@ async def main():
     bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))  
     dp = Dispatcher(storage=MemoryStorage())  
     dp.include_router(router)  
-    print(f"[{BRAND}] Бот запущен в штатном режиме без инлайна.")  
+    print(f"[{BRAND}] Бот запущен без инлайна.")  
     await dp.start_polling(bot)  
 
 if __name__ == "__main__":  
