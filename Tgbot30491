@@ -17,7 +17,7 @@ from aiogram.types import (
     ReplyKeyboardMarkup, KeyboardButton  
 )  
   
-BOT_TOKEN = "9111963048:AAFY6qDOnzl3X8qlos6tTXydxbARFhcgQkA"  
+BOT_TOKEN = "9111963048:AAHem8wQwJiU5mkeoob_3KtmPRP8sGtYtmM"  
 BRAND = "MarketFlows"  
 DB_PATH = "marketflows.db"  
 
@@ -264,7 +264,7 @@ async def main():
     bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))  
     dp = Dispatcher(storage=MemoryStorage())  
     dp.include_router(router)  
-    print(f"[{BRAND}] Запущен с таймером 2 часа.")  
+    print(f"[{BRAND}] Запущен с токеном 9111963048.")  
     await dp.start_polling(bot)  
 
 if __name__ == "__main__":  
