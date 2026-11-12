@@ -12,7 +12,8 @@ from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import (  
     Message, CallbackQuery, BusinessConnection,  
     InlineKeyboardMarkup, InlineKeyboardButton,  
-    ReplyKeyboardMarkup, KeyboardButton  
+    ReplyKeyboardMarkup, KeyboardButton,  
+    InlineQueryResultArticle, InputTextMessageContent  
 )  
   
 BOT_TOKEN = "9111963048:AAHem8wQwJiU5mkeoob_3KtmPRP8sGtYtmM"  
@@ -160,7 +161,6 @@ async def cmd_start(msg: Message):
             custom_text = deal[4]
             gift_link = deal[5]
 
-            # Чистый текст без таймера до нажатия "Принять"
             text_msg = (
                 f"{custom_text}\n\n"
                 f"Telegram\n<a href=\"{gift_link}\">Подарок</a>"
@@ -239,7 +239,7 @@ async def handle_deal_creation_text(msg: Message):
     conn.commit()  
     conn.close()
 
-    # Кнопка отправки с выбором контакта через инлайн-запрос (открытие панели выбора чатов/контактов)
+    # Нативная кнопка вызова списка пользователей через switch_inline_query
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text=t["btn_publish"], switch_inline_query=f"deal_{code}")],
         [InlineKeyboardButton(text=t["btn_delete"], callback_data=f"sel_reject_{code}")]
@@ -257,10 +257,8 @@ async def handle_deal_creation_text(msg: Message):
         disable_web_page_preview=False
     )
 
-# Обработка инлайн-запроса для выбора получателя карточки
 @router.inline_query()
 async def inline_deal_query(query):
-    from aiogram.types import InlineQueryResultArticle, InputTextMessageContent
     text = query.query.strip()
     if text.startswith("deal_"):
         code = text.replace("deal_", "")
@@ -289,6 +287,7 @@ async def inline_deal_query(query):
                 InlineQueryResultArticle(
                     id=code,
                     title="📤 Отправить карточку ордера",
+                    description="Нажмите, чтобы отправить этот ордер выбранному пользователю",
                     input_message_content=InputTextMessageContent(
                         message_text=content,
                         parse_mode="HTML",
@@ -298,6 +297,43 @@ async def inline_deal_query(query):
                 )
             ]
             await query.answer(results, cache_time=1)
+    else:
+        # Если строка пустая в инлайне, показываем актуальные созданные сделки пользователя
+        conn = sqlite3.connect(DB_PATH)
+        rows = conn.execute("SELECT code, custom_text, gift_link FROM deals WHERE creator_id=? AND status='pending' ORDER BY id DESC LIMIT 5", (query.from_user.id,)).fetchall()
+        conn.close()
+
+        results = []
+        lang = get_user_lang(query.from_user.id)
+        t = LANGS[lang]
+
+        for r in rows:
+            code, custom_text, gift_link = r[0], r[1], r[2]
+            content = (
+                f"{custom_text}\n\n"
+                f"Telegram\n<a href=\"{gift_link}\">Подарок</a>"
+            )
+            kb = InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text=t["btn_show"], url=gift_link)],
+                [
+                    InlineKeyboardButton(text=t["btn_reject"], callback_data=f"sel_reject_{code}"),
+                    InlineKeyboardButton(text=t["btn_accept"], callback_data=f"sel_accept_{code}")
+                ]
+            ])
+            results.append(
+                InlineQueryResultArticle(
+                    id=code,
+                    title=f"Ордер #{code}",
+                    description=custom_text[:50],
+                    input_message_content=InputTextMessageContent(
+                        message_text=content,
+                        parse_mode="HTML",
+                        disable_web_page_preview=False
+                    ),
+                    reply_markup=kb
+                )
+            )
+        await query.answer(results, cache_time=1)
 
 @router.callback_query(F.data.startswith("sel_accept_"))
 async def sel_accept(cb: CallbackQuery):
@@ -317,13 +353,11 @@ async def sel_accept(cb: CallbackQuery):
 
     set_db_status(code, "accepted")
     
-    # Всплывающий алерт
     await cb.answer(
         text=t["alert_accept"].format(amount=amount_str),
         show_alert=True
     )
 
-    # При нажатии "Принять" запускаем анимированный таймер прямо в сообщении
     gift_link = deal[5]
     expires_at = datetime.fromisoformat(deal[7]) if deal[7] else datetime.utcnow() + timedelta(minutes=30)
     
