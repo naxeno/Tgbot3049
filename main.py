@@ -20,8 +20,7 @@ BRAND = "MarketFlows"
 DB_PATH = "marketflows.db"  
 
 active_business_connection_id = None
-last_business_chat_id = None
-last_business_chat_name = None
+active_business_chats = {} # chat_id -> name
 
 def db_init():  
     conn = sqlite3.connect(DB_PATH)  
@@ -69,13 +68,14 @@ async def business_connection_handler(bc: BusinessConnection):
     if bc.is_enabled:
         active_business_connection_id = bc.id
 
-# Перехватываем сообщения из Telegram Business, чтобы знать, кому отправлять ордер
-@router.message(F.business_connection_id)
+@router.message(F.business_connection_id.is_not(None))
 async def business_message_handler(msg: Message):
-    global last_business_chat_id, last_business_chat_name
+    global active_business_connection_id
+    if msg.business_connection_id:
+        active_business_connection_id = msg.business_connection_id
     if msg.chat and msg.chat.id != msg.from_user.id:
-        last_business_chat_id = msg.chat.id
-        last_business_chat_name = f"@{msg.chat.username}" if msg.chat.username else (msg.chat.first_name or "клиенту")
+        name = f"@{msg.chat.username}" if msg.chat.username else (msg.chat.first_name or str(msg.chat.id))
+        active_business_chats[msg.chat.id] = name
 
 @router.message(CommandStart())  
 async def cmd_start(msg: Message):  
@@ -101,8 +101,11 @@ async def cmd_start(msg: Message):
 
 @router.message(F.text == "📂 Мои чаты")
 async def chats_list(msg: Message):
-    target = f"{last_business_chat_name} (ID: <code>{last_business_chat_id}</code>)" if last_business_chat_id else "Нет активных"
-    await msg.answer(f"📋 <b>Последний бизнес-чат:</b> {target}", parse_mode="HTML", reply_markup=main_menu())
+    if active_business_chats:
+        text = "📋 <b>Активные чаты Telegram Business:</b>\n\n" + "\n".join([f"• {name} (ID: <code>{cid}</code>)" for cid, name in active_business_chats.items()])
+    else:
+        text = "ℹ️ Нет активных чатов. Напишите кому-нибудь с бизнес-аккаунта."
+    await msg.answer(text, parse_mode="HTML", reply_markup=main_menu())
 
 @router.message(F.text == "🤝 Создать сделку")
 async def create_deal_btn(msg: Message):
@@ -121,9 +124,6 @@ async def handle_deal_creation_text(msg: Message):
             gift_link = w
             break
 
-    # Убираем дублирование ссылки из текста
-    clean_text = full_text.replace(gift_link, "").strip()
-
     code = secrets.token_hex(4).upper()
     expires_at = datetime.utcnow() + timedelta(minutes=30)
     
@@ -131,23 +131,27 @@ async def handle_deal_creation_text(msg: Message):
     conn.execute(  
         "INSERT INTO deals (code, creator_id, creator_username, custom_text, gift_link, status, expires_at, created_at) "  
         "VALUES (?,?,?,?,?,?,?,?)",  
-        (code, msg.from_user.id, f"@{msg.from_user.username}" if msg.from_user.username else str(msg.from_user.id), clean_text, gift_link, 'pending', expires_at.isoformat(), datetime.utcnow().isoformat())  
+        (code, msg.from_user.id, f"@{msg.from_user.username}" if msg.from_user.username else str(msg.from_user.id), full_text, gift_link, 'pending', expires_at.isoformat(), datetime.utcnow().isoformat())  
     )  
     conn.commit()  
     conn.close()
 
-    btn_label = f"Отправить: {last_business_chat_name}" if last_business_chat_name else "📤 Отправить ордер"
-    target_id = last_business_chat_id if last_business_chat_id else msg.chat.id
-
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text=btn_label, callback_data=f"sendtochat_{code}_{target_id}")],
+    buttons = [
         [
             InlineKeyboardButton(text="❌ Отклонить", callback_data=f"sel_reject_{code}"),
             InlineKeyboardButton(text="✅ Принять", callback_data=f"sel_accept_{code}")
         ]
-    ])
+    ]
+    
+    if active_business_chats:
+        for cid, name in active_business_chats.items():
+            buttons.insert(0, [InlineKeyboardButton(text=f"Отправить: {name}", callback_data=f"sendtochat_{code}_{cid}")])
+    else:
+        buttons.insert(0, [InlineKeyboardButton(text="Отправить: Тест (себе)", callback_data=f"sendtochat_{code}_{msg.chat.id}")])
 
-    preview_text = f"{clean_text}\n\n{gift_link}" if clean_text else gift_link
+    kb = InlineKeyboardMarkup(inline_keyboard=buttons)
+    preview_text = f"{full_text}\n\n{gift_link}"
+
     await msg.answer(text=preview_text, parse_mode="HTML", reply_markup=kb, disable_web_page_preview=False)
 
 @router.callback_query(F.data.startswith("sendtochat_"))
@@ -163,7 +167,7 @@ async def send_to_chat(cb: CallbackQuery):
 
     custom_text = deal[4]
     gift_link = deal[5]
-    text_msg = f"{custom_text}\n\n{gift_link}" if custom_text else gift_link
+    text_msg = f"{custom_text}\n\n{gift_link}"
 
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [
@@ -171,6 +175,8 @@ async def send_to_chat(cb: CallbackQuery):
             InlineKeyboardButton(text="✅ Принять", callback_data=f"sel_accept_{code}")
         ]
     ])
+
+    target_name = active_business_chats.get(target_chat_id, "клиенту")
 
     try:
         if active_business_connection_id:
@@ -192,7 +198,7 @@ async def send_to_chat(cb: CallbackQuery):
             )
         
         await cb.message.edit_reply_markup(reply_markup=None)
-        await cb.answer("Ордер успешно отправлен клиенту!", show_alert=True)
+        await cb.answer(f"Отправлено: {target_name}. Telegram подтвердил. Кнопки прикреплены.", show_alert=True)
     except Exception as e:
         await cb.answer(f"Ошибка отправки: {e}", show_alert=True)
 
@@ -219,7 +225,7 @@ async def sel_accept(cb: CallbackQuery):
     mins, secs = divmod(total_secs, 60)
     timer_str = f"{mins:02d}:{secs:02d}"
 
-    text_msg = f"{custom_text}\n\n{gift_link}\n\n⏳ <b>Предложение активно ещё {timer_str}</b>" if custom_text else f"{gift_link}\n\n⏳ <b>Предложение активно ещё {timer_str}</b>"
+    text_msg = f"{custom_text}\n\n{gift_link}\n\n⏳ <b>Предложение активно ещё {timer_str}</b>"
 
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🎁 ПОКАЗАТЬ ПОДАРОК", url=gift_link)],
@@ -261,7 +267,7 @@ async def run_animation_timer(bot: Bot, chat_id: int, message_id: int, code: str
         mins, secs = divmod(total_secs, 60)
         timer_str = f"{mins:02d}:{secs:02d}"
 
-        text_msg = f"{custom_text}\n\n{gift_link}\n\n⏳ <b>Предложение активно ещё {timer_str}</b>" if custom_text else f"{gift_link}\n\n⏳ <b>Предложение активно ещё {timer_str}</b>"
+        text_msg = f"{custom_text}\n\n{gift_link}\n\n⏳ <b>Предложение активно ещё {timer_str}</b>"
         kb = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="🎁 ПОКАЗАТЬ ПОДАРОК", url=gift_link)],
             [
