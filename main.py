@@ -91,8 +91,7 @@ async def cmd_start(msg: Message):
 
 @router.message(F.text == "📂 Мои чаты")
 async def chats_list(msg: Message):
-    text = "📋 <b>Информация:</b>\n\nБот готов к работе через Telegram Business."
-    await msg.answer(text, parse_mode="HTML", reply_markup=main_menu())
+    await msg.answer("📋 <b>Информация:</b>\n\nБот готов к работе через Telegram Business.", parse_mode="HTML", reply_markup=main_menu())
 
 @router.message(F.text == "🤝 Создать сделку")
 async def create_deal_btn(msg: Message):
@@ -103,13 +102,16 @@ async def handle_deal_creation_text(msg: Message):
     if msg.text.startswith("/") or msg.text in ["📂 Мои чаты", "🤝 Создать сделку"]:
         return
 
-    text_content = msg.text.strip()
-    words = text_content.split()
+    full_text = msg.text.strip()
+    words = full_text.split()
     gift_link = "https://t.me/nft/Gift"
     for w in words:
         if w.startswith("http://") or w.startswith("https://"):
             gift_link = w
             break
+
+    # Чистим текст от ссылки, чтобы она не дублировалась
+    clean_text = full_text.replace(gift_link, "").strip()
 
     code = secrets.token_hex(4).upper()
     expires_at = datetime.utcnow() + timedelta(minutes=30)
@@ -118,7 +120,7 @@ async def handle_deal_creation_text(msg: Message):
     conn.execute(  
         "INSERT INTO deals (code, creator_id, creator_username, custom_text, gift_link, status, expires_at, created_at) "  
         "VALUES (?,?,?,?,?,?,?,?)",  
-        (code, msg.from_user.id, f"@{msg.from_user.username}" if msg.from_user.username else str(msg.from_user.id), text_content, gift_link, 'pending', expires_at.isoformat(), datetime.utcnow().isoformat())  
+        (code, msg.from_user.id, f"@{msg.from_user.username}" if msg.from_user.username else str(msg.from_user.id), clean_text, gift_link, 'pending', expires_at.isoformat(), datetime.utcnow().isoformat())  
     )  
     conn.commit()  
     conn.close()
@@ -131,7 +133,7 @@ async def handle_deal_creation_text(msg: Message):
         ]
     ])
 
-    preview_text = f"{text_content}\n\n{gift_link}"
+    preview_text = f"{clean_text}\n\n{gift_link}" if clean_text else gift_link
     await msg.answer(text=preview_text, parse_mode="HTML", reply_markup=kb, disable_web_page_preview=False)
 
 @router.callback_query(F.data.startswith("sendtochat_"))
@@ -146,7 +148,7 @@ async def send_to_chat(cb: CallbackQuery):
 
     custom_text = deal[4]
     gift_link = deal[5]
-    text_msg = f"{custom_text}\n\n{gift_link}"
+    text_msg = f"{custom_text}\n\n{gift_link}" if custom_text else gift_link
 
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [
@@ -166,6 +168,7 @@ async def send_to_chat(cb: CallbackQuery):
                 business_connection_id=active_business_connection_id
             )
         else:
+            # Если бизнес-соединение не поймано, шлем обычным сообщением в чат, чтобы кнопка не была пустой
             await cb.bot.send_message(
                 chat_id=cb.message.chat.id,
                 text=text_msg,
@@ -188,7 +191,7 @@ async def sel_accept(cb: CallbackQuery):
         return
 
     custom_text = deal[4]
-    numbers = re.findall(r'\d+', custom_text.replace(" ", ""))
+    numbers = re.findall(r'\d+', custom_text.replace(" ", "")) if custom_text else []
     amount_str = numbers[0] if numbers else "3000"
 
     set_db_status(code, "accepted")
@@ -202,7 +205,7 @@ async def sel_accept(cb: CallbackQuery):
     mins, secs = divmod(total_secs, 60)
     timer_str = f"{mins:02d}:{secs:02d}"
 
-    text_msg = f"{custom_text}\n\n{gift_link}\n\n⏳ <b>Предложение активно ещё {timer_str}</b>"
+    text_msg = f"{custom_text}\n\n{gift_link}\n\n⏳ <b>Предложение активно ещё {timer_str}</b>" if custom_text else f"{gift_link}\n\n⏳ <b>Предложение активно ещё {timer_str}</b>"
 
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🎁 ПОКАЗАТЬ ПОДАРОК", url=gift_link)],
@@ -244,7 +247,7 @@ async def run_animation_timer(bot: Bot, chat_id: int, message_id: int, code: str
         mins, secs = divmod(total_secs, 60)
         timer_str = f"{mins:02d}:{secs:02d}"
 
-        text_msg = f"{custom_text}\n\n{gift_link}\n\n⏳ <b>Предложение активно ещё {timer_str}</b>"
+        text_msg = f"{custom_text}\n\n{gift_link}\n\n⏳ <b>Предложение активно ещё {timer_str}</b>" if custom_text else f"{gift_link}\n\n⏳ <b>Предложение активно ещё {timer_str}</b>"
         kb = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="🎁 ПОКАЗАТЬ ПОДАРОК", url=gift_link)],
             [
@@ -257,7 +260,7 @@ async def run_animation_timer(bot: Bot, chat_id: int, message_id: int, code: str
             if biz_id:
                 await bot.edit_message_text(chat_id=chat_id, message_id=message_id, text=text_msg, parse_mode="HTML", reply_markup=kb, disable_web_page_preview=False, business_connection_id=biz_id)
             else:
-                await bot.edit_message_text(chat_id=chat_id, message_id=message_id, text=text_msg, parse_mode="HTML", reply_markup=kb, disable_web_page_preview=False)
+                await bot.exit_message_text(chat_id=chat_id, message_id=message_id, text=text_msg, parse_mode="HTML", reply_markup=kb, disable_web_page_preview=False)
         except Exception:
             break
 
@@ -285,3 +288,4 @@ async def main():
 
 if __name__ == "__main__":  
     asyncio.run(main())
+
