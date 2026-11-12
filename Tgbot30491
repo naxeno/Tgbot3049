@@ -82,10 +82,13 @@ LANGS = {
 }
 
 def get_user_lang(user_id):
-    conn = db()
-    row = conn.execute("SELECT lang FROM users WHERE user_id=?", (user_id,)).fetchone()
-    conn.close()
-    return row[0] if row else "ru"
+    try:
+        conn = db()
+        row = conn.execute("SELECT lang FROM users WHERE user_id=?", (user_id,)).fetchone()
+        conn.close()
+        return row[0] if row else "ru"
+    except Exception:
+        return "ru"
 
 def set_user_lang(user_id, lang):
     conn = db()
@@ -185,7 +188,6 @@ async def cmd_start(msg: Message):
             mins, secs = divmod(total_secs, 60)
             timer_str = f"{mins:02d}:{secs:02d}"
 
-            # Формируем карточку с нативным текстом подарка (без левых картинок-конфетти)
             text_msg = (
                 f"{custom_text}\n\n"
                 f"Telegram\n<a href=\"{gift_link}\">Подарок</a>\n\n"
@@ -230,7 +232,10 @@ async def set_language(cb: CallbackQuery):
     lang = cb.data.split("_")[1]
     set_user_lang(cb.from_user.id, lang)
     t = LANGS[lang]
-    await cb.message.edit_text(t["lang_chosen"])
+    try:
+        await cb.message.edit_text(t["lang_chosen"])
+    except Exception:
+        pass
     await cb.message.answer(t["welcome"].format(brand=BRAND), parse_mode="HTML", reply_markup=main_menu(lang))
     await cb.answer()
 
@@ -343,7 +348,10 @@ async def send_to_chat(cb: CallbackQuery):
 
     asyncio.create_task(run_animation_timer(cb.bot, sent_msg.chat.id, sent_msg.message_id, code, gift_link, custom_text, expires_at, active_business_connection_id, lang))
 
-    await cb.message.edit_reply_markup(reply_markup=None)
+    try:
+        await cb.message.edit_reply_markup(reply_markup=None)
+    except Exception:
+        pass
     await cb.answer(t["order_sent"])
 
 async def run_animation_timer(bot: Bot, chat_id: int, message_id: int, code: str, gift_link: str, custom_text: str, expires_at: datetime, biz_id: str, lang: str):
@@ -428,7 +436,10 @@ async def sel_reject(cb: CallbackQuery):
     lang = get_user_lang(cb.from_user.id)
     t = LANGS[lang]
     set_db_status(code, "rejected")
-    await cb.message.edit_text(text=t["order_rejected"], reply_markup=None)
+    try:
+        await cb.message.edit_text(text=t["order_rejected"], reply_markup=None)
+    except Exception:
+        pass
     await cb.answer()
 
 async def main():  
@@ -436,7 +447,7 @@ async def main():
     bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))  
     dp = Dispatcher(storage=MemoryStorage())  
     dp.include_router(router)  
-    print(f"[{BRAND}] Бот запущен в нативном текстовом режиме с превью подарков.")  
+    print(f"[{BRAND}] Бот успешно запущен и готов к работе.")  
     await dp.start_polling(bot)  
 
 if __name__ == "__main__":  
