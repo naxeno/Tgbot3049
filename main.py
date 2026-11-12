@@ -20,7 +20,6 @@ BRAND = "MarketFlows"
 DB_PATH = "marketflows.db"  
 
 active_business_connection_id = None
-active_business_chats = {} 
 
 def db_init():  
     conn = sqlite3.connect(DB_PATH)  
@@ -92,7 +91,7 @@ async def cmd_start(msg: Message):
 
 @router.message(F.text == "📂 Мои чаты")
 async def chats_list(msg: Message):
-    text = "📋 <b>Информация:</b>\n\nБот готов к работе через Telegram Business. Отправьте текст с ссылкой для создания ордера."
+    text = "📋 <b>Информация:</b>\n\nБот готов к работе через Telegram Business."
     await msg.answer(text, parse_mode="HTML", reply_markup=main_menu())
 
 @router.message(F.text == "🤝 Создать сделку")
