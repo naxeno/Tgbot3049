@@ -78,7 +78,7 @@ LANGS = {
         "order_rejected": "❌ 订单已拒绝。",
         "order_sent": "✅ 订单已发送！",
         "lang_chosen": "✅ 语言已成功切换为中文 🇨🇳",
-        "choose_lang": "🌐 选择语言 / Choose language / Выберите язык:"
+        "choose_lang": "🌐 选择语言 / Choose language / 选择语言:"
     }
 }
 
