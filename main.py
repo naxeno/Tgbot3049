@@ -225,7 +225,7 @@ async def sel_accept(cb: CallbackQuery):
                 business_connection_id=active_business_connection_id
             )
         else:
-            await cb.bot.edit_text(text=text_msg, parse_mode="HTML", reply_markup=kb, disable_web_page_preview=False)
+            await cb.message.edit_text(text=text_msg, parse_mode="HTML", reply_markup=kb, disable_web_page_preview=False)
     except Exception:
         pass
 
@@ -245,9 +245,13 @@ async def sel_reject(cb: CallbackQuery):
 async def main():  
     db_init()  
     bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))  
+    
+    # Жестко сбрасываем вебхук перед запуском поллинга
     await bot.delete_webhook(drop_pending_updates=True)  
+    
     dp = Dispatcher(storage=MemoryStorage())  
     dp.include_router(router)  
+    print(f"[{BRAND}] Бот успешно запущен.")  
     await dp.start_polling(bot)  
 
 if __name__ == "__main__":  
