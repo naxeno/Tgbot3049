@@ -21,10 +21,9 @@ DB_PATH = "marketflows.db"
 active_business_connection_id = None
 active_business_chats = {} 
 
-# Словарь локализации (Русский, Английский, Китайский)
 LANGS = {
     "ru": {
-        "welcome": "🏦 <b>{brand}</b>\n\nПросто отправь мне в этот чат готовый текст со ссылкой на подарок (например: <i>Пользователь предлагает вам 3000 ⭐ за подарок https://t.me/nft/Anubis</i>), и я сразу сделаю карточку ордера!",
+        "welcome": "🏦 <b>{brand}</b>\n\nОтправь мне текст со ссылкой на подарок (например: <i>Пользователь предлагает вам 3000 ⭐ за ваш подарок https://t.me/nft/DeskCalendar-84640</i>), и я сделаю карточку ордера!",
         "menu_create": "🤝 Создать сделку",
         "menu_lang": "🌍 Язык: Русский",
         "menu_chats": "📂 Мои чаты",
@@ -39,12 +38,11 @@ LANGS = {
         "alert_accept": "Отправьте подарок в течение 30 минут, и {amount} ⭐ автоматически пополнятся на ваш аккаунт.",
         "order_rejected": "❌ Ордер отклонён.",
         "order_sent": "✅ Ордер отправлен!",
-        "order_not_found": "Ордер не найден",
         "lang_chosen": "✅ Язык успешно изменен на Русский 🇷🇺",
         "choose_lang": "🌐 Выберите язык / Choose language / 选择语言:"
     },
     "en": {
-        "welcome": "🏦 <b>{brand}</b>\n\nJust send me the text with the gift link in this chat (e.g., <i>User offers you 3000 ⭐ for the gift https://t.me/nft/Anubis</i>), and I'll instantly create the order card!",
+        "welcome": "🏦 <b>{brand}</b>\n\nSend me the text with the gift link, and I'll create the order card!",
         "menu_create": "🤝 Create Deal",
         "menu_lang": "🌍 Language: English",
         "menu_chats": "📂 My Chats",
@@ -59,12 +57,11 @@ LANGS = {
         "alert_accept": "Send the gift within 30 minutes, and {amount} ⭐ will be automatically added to your account.",
         "order_rejected": "❌ Order rejected.",
         "order_sent": "✅ Order sent!",
-        "order_not_found": "Order not found",
         "lang_chosen": "✅ Language successfully changed to English 🇬🇧",
         "choose_lang": "🌐 Choose language / Выберите язык / 选择语言:"
     },
     "zh": {
-        "welcome": "🏦 <b>{brand}</b>\n\n只需在此聊天中发送带有礼物链接的文本（例如：<i>用户出价 3000 ⭐ 购买礼物 https://t.me/nft/Anubis</i>），我就会立即生成订单卡片！",
+        "welcome": "🏦 <b>{brand}</b>\n\n发送带有礼物链接的文本，我将创建订单卡片！",
         "menu_create": "🤝 创建交易",
         "menu_lang": "🌍 语言: 中文",
         "menu_chats": "📂 我的聊天",
@@ -79,9 +76,8 @@ LANGS = {
         "alert_accept": "请在 30 分钟内发送礼物，{amount} ⭐ 将自动充值到您的账户中。",
         "order_rejected": "❌ 订单已拒绝。",
         "order_sent": "✅ 订单已发送！",
-        "order_not_found": "未找到订单",
         "lang_chosen": "✅ 语言已成功切换为中文 🇨🇳",
-        "choose_lang": "🌐 选择语言 / Choose language / Выберите язык:"
+        "choose_lang": "🌐 选择语言 / Choose language / 选择语言:"
     }
 }
 
@@ -189,7 +185,8 @@ async def cmd_start(msg: Message):
             mins, secs = divmod(total_secs, 60)
             timer_str = f"{mins:02d}:{secs:02d}"
 
-            caption = (
+            # Формируем карточку с нативным текстом подарка (без левых картинок-конфетти)
+            text_msg = (
                 f"{custom_text}\n\n"
                 f"Telegram\n<a href=\"{gift_link}\">Подарок</a>\n\n"
                 f"{t['timer_text'].format(timer=timer_str)}"
@@ -203,11 +200,11 @@ async def cmd_start(msg: Message):
                 ]
             ])
             
-            await msg.answer_photo(
-                photo="https://images.unsplash.com/photo-1513151233558-d860c5398176?q=80&w=1000&auto=format&fit=crop",
-                caption=caption,
+            await msg.answer(
+                text=text_msg,
                 parse_mode="HTML",
-                reply_markup=kb
+                reply_markup=kb,
+                disable_web_page_preview=False
             )
             return  
 
@@ -242,7 +239,6 @@ async def handle_deal_creation_text(msg: Message):
     lang = get_user_lang(msg.from_user.id)
     t = LANGS[lang]
 
-    # Игнорируем нажатия на меню языков в тексте
     if msg.text in ["🌍 Язык: Русский", "🌍 Language: English", "🌍 语言: 中文", "📂 Мои чаты", "📂 My Chats", "📂 我的聊天"]:
         return
 
@@ -277,17 +273,17 @@ async def handle_deal_creation_text(msg: Message):
 
     kb = InlineKeyboardMarkup(inline_keyboard=send_buttons)
 
-    caption = (
+    preview_text = (
         f"{t['order_ready'].format(code=code)}\n\n"
         f"{text_content}\n\n"
         f"{t['timer_text'].format(timer='29:59')}"
     )
 
-    await msg.answer_photo(
-        photo="https://images.unsplash.com/photo-1513151233558-d860c5398176?q=80&w=1000&auto=format&fit=crop",
-        caption=caption,
+    await msg.answer(
+        text=preview_text,
         parse_mode="HTML",
-        reply_markup=kb
+        reply_markup=kb,
+        disable_web_page_preview=False
     )
 
 @router.callback_query(F.data.startswith("sendtochat_"))
@@ -298,7 +294,7 @@ async def send_to_chat(cb: CallbackQuery):
     
     deal = get_deal(code)
     if not deal:
-        await cb.answer("Ордер не найден", show_alert=True)
+        await cb.answer(LANGS[get_user_lang(cb.from_user.id)]["order_not_found"], show_alert=True)
         return
 
     lang = get_user_lang(cb.from_user.id)
@@ -313,7 +309,7 @@ async def send_to_chat(cb: CallbackQuery):
     mins, secs = divmod(total_secs, 60)
     timer_str = f"{mins:02d}:{secs:02d}"
 
-    caption = (
+    text_msg = (
         f"{custom_text}\n\n"
         f"Telegram\n<a href=\"{gift_link}\">Подарок</a>\n\n"
         f"{t['timer_text'].format(timer=timer_str)}"
@@ -328,21 +324,21 @@ async def send_to_chat(cb: CallbackQuery):
     ])
 
     if active_business_connection_id:
-        sent_msg = await cb.bot.send_photo(
+        sent_msg = await cb.bot.send_message(
             chat_id=target_chat_id,
-            photo="https://images.unsplash.com/photo-1513151233558-d860c5398176?q=80&w=1000&auto=format&fit=crop",
-            caption=caption,
+            text=text_msg,
             parse_mode="HTML",
             reply_markup=kb,
+            disable_web_page_preview=False,
             business_connection_id=active_business_connection_id
         )
     else:
-        sent_msg = await cb.bot.send_photo(
+        sent_msg = await cb.bot.send_message(
             chat_id=target_chat_id,
-            photo="https://images.unsplash.com/photo-1513151233558-d860c5398176?q=80&w=1000&auto=format&fit=crop",
-            caption=caption,
+            text=text_msg,
             parse_mode="HTML",
-            reply_markup=kb
+            reply_markup=kb,
+            disable_web_page_preview=False
         )
 
     asyncio.create_task(run_animation_timer(cb.bot, sent_msg.chat.id, sent_msg.message_id, code, gift_link, custom_text, expires_at, active_business_connection_id, lang))
@@ -366,7 +362,7 @@ async def run_animation_timer(bot: Bot, chat_id: int, message_id: int, code: str
         mins, secs = divmod(total_secs, 60)
         timer_str = f"{mins:02d}:{secs:02d}"
 
-        caption = (
+        text_msg = (
             f"{custom_text}\n\n"
             f"Telegram\n<a href=\"{gift_link}\">Подарок</a>\n\n"
             f"{t['timer_text'].format(timer=timer_str)}"
@@ -382,21 +378,23 @@ async def run_animation_timer(bot: Bot, chat_id: int, message_id: int, code: str
 
         try:
             if biz_id:
-                await bot.edit_message_caption(
+                await bot.edit_message_text(
                     chat_id=chat_id,
                     message_id=message_id,
-                    caption=caption,
+                    text=text_msg,
                     parse_mode="HTML",
                     reply_markup=kb,
+                    disable_web_page_preview=False,
                     business_connection_id=biz_id
                 )
             else:
-                await bot.edit_message_caption(
+                await bot.edit_message_text(
                     chat_id=chat_id,
                     message_id=message_id,
-                    caption=caption,
+                    text=text_msg,
                     parse_mode="HTML",
-                    reply_markup=kb
+                    reply_markup=kb,
+                    disable_web_page_preview=False
                 )
         except Exception:
             break
@@ -406,7 +404,7 @@ async def sel_accept(cb: CallbackQuery):
     code = cb.data.split("_")[2]
     deal = get_deal(code)
     if not deal:
-        await cb.answer("Ордер не найден", show_alert=True)
+        await cb.answer(LANGS[get_user_lang(cb.from_user.id)]["order_not_found"], show_alert=True)
         return
 
     lang = get_user_lang(cb.from_user.id)
@@ -430,7 +428,7 @@ async def sel_reject(cb: CallbackQuery):
     lang = get_user_lang(cb.from_user.id)
     t = LANGS[lang]
     set_db_status(code, "rejected")
-    await cb.message.edit_caption(caption=t["order_rejected"], reply_markup=None)
+    await cb.message.edit_text(text=t["order_rejected"], reply_markup=None)
     await cb.answer()
 
 async def main():  
@@ -438,7 +436,7 @@ async def main():
     bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))  
     dp = Dispatcher(storage=MemoryStorage())  
     dp.include_router(router)  
-    print(f"[{BRAND}] Бот запущен с поддержкой языков (RU, EN, ZH).")  
+    print(f"[{BRAND}] Бот запущен в нативном текстовом режиме с превью подарков.")  
     await dp.start_polling(bot)  
 
 if __name__ == "__main__":  
